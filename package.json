@@ -1,0 +1,26 @@
+{
+  "name": "pdf-interactive-pdf-studio",
+  "version": "1.0.0",
+  "description": "Local browser-based interactive PDF conversion with fillable notes and page navigation",
+  "main": "index.js",
+  "scripts": {
+    "build": "node scripts/build.cjs",
+    "start": "node scripts/serve.cjs",
+    "test": "npm run build && node test.cjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "mammoth": "^1.11.0",
+    "pdf-lib": "^1.17.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^0.1.80",
+    "jsdom": "^26.1.0"
+  },
+  "private": true
+}
