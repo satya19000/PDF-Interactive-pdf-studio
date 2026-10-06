@@ -8,6 +8,7 @@ export function parseStructured(text) {
   const chunks = String(text).split(/(?=^\s*(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])\s+)/gim);
   for (const chunk of chunks) {
     const lines = chunk.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    if (/^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])$/i.test(lines[0] || '') && lines[1]) lines.splice(0,2,lines[0]+' '+lines[1]);
     if (!/^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])\s+/i.test(lines[0] || '')) continue;
     const options = [], stem = [], explanation = [];
     let answer = null, inExplanation = false;

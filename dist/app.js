@@ -33,6 +33,40 @@ if(opts.notes||opts.checks){const count=opts.checks?Math.ceil(n/18):1;for(let k=
 for(let i=0;i<indices.length;i++){const p=indices[i];if(i>0)link(doc,p,'Previous index',48,62,indices[i-1],regular);if(i+1<indices.length)link(doc,p,'Next index',220,62,indices[i+1],regular);if(worksheetPages.length)link(doc,p,'Open worksheet',400,62,worksheetPages[0],regular)}doc.setTitle(title);doc.setCreator('PDF Interactive Studio');return {bytes:await doc.save(),pages:doc.getPageCount(),sourcePages:n,mcqs:opts.mcqCount||0};}
 function showOutputs(){ $('results').hidden=!outputs.length;$('zip').hidden=outputs.length<=1;$('outputs').replaceChildren();for(const o of outputs){const row=el('div','output');const info=el('div','filename',o.name);info.append(el('small','',`${o.sourcePages} ${o.quiz?'questions':'source pages'} · ${o.mcqs} interactive MCQs · ${o.pages} total pages · ${human(o.blob.size)}`));const a=el('a','download','Download PDF');a.href=o.url;a.download=o.name;row.append(el('div','fileicon','PDF'),info,a);$('outputs').append(row)}}
 function setProgress(value,message){$('progress').hidden=false;$('progress').value=Math.max(0,Math.min(100,value));$('progress').setAttribute('aria-label',message);$('status').textContent=message;}
+let ocrScriptPromise;
+function loadOcrEngine(){
+ if(!ocrScriptPromise)ocrScriptPromise=new Promise((resolve,reject)=>{
+  const script=document.createElement('script');script.src='vendor/tesseract.min.js';
+  script.onload=()=>resolve();script.onerror=()=>reject(new Error('OCR engine could not load. Check the connection and try again.'));
+  document.head.append(script);
+ });
+ return ocrScriptPromise;
+}
+async function ocrPdfPages(pdfjs,pages,report){
+ await loadOcrEngine();
+ const root=new URL('./vendor/',location.href).href;
+ let worker;const recognized=new Map();
+ try{
+  report(0,`Loading English OCR model for ${pages.length} scanned page(s)…`);
+  worker=await Tesseract.createWorker('eng',1,{
+   workerPath:root+'worker.min.js',corePath:root+'ocr-core',langPath:root+'ocr-lang',workerBlobURL:false
+  });
+  for(let index=0;index<pages.length;index++){
+   const number=pages[index],page=await pdfjs.getPage(number),base=page.getViewport({scale:1});
+   const scale=Math.min(2.2,2400/Math.max(base.width,base.height));
+   const viewport=page.getViewport({scale});
+   const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+   try{
+    await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+    const {data}=await worker.recognize(canvas);
+    report((index+1)/pages.length,`OCR page ${index+1} of ${pages.length} · source page ${number}`);
+    recognized.set(number,data.text||'');
+   }finally{canvas.width=0;canvas.height=0;page.cleanup?.();}
+   await new Promise(resolve=>setTimeout(resolve,0));
+  }
+ }finally{await worker?.terminate();}
+ return recognized;
+}
 async function extractQuiz(item,report=setProgress){
  const {parseBmj,parseStructured,inferBmjAnswerColors,captureBmjFigures}=await import('./quiz.mjs');
  if(ext(item.file.name)==='pdf'){
@@ -45,8 +79,20 @@ async function extractQuiz(item,report=setProgress){
     if(p%10===0||p===pdfjs.numPages){item.state=`Reading ${p}/${pdfjs.numPages} pages`;report(p/pdfjs.numPages*50,`${item.file.name}: reading page ${p} of ${pdfjs.numPages} (${Math.round(p/pdfjs.numPages*50)}%)`);render();await new Promise(r=>setTimeout(r,0));}
    }
    const bmj=parseBmj(pages);if(bmj.length){await inferBmjAnswerColors(pdfjs,bmj,(done,total)=>{item.state=`Checking answer key ${done}/${total}`;report(50+done/total*25,`${item.file.name}: checking answers ${done} of ${total} (${Math.round(50+done/total*25)}%)`);render()});item.state='Preserving question figures…';report(75,`${item.file.name}: preserving question figures (75%)`);render();await captureBmjFigures(pdfjs,bmj,(done,total)=>report(75+done/total*5,`${item.file.name}: preserving figure ${done} of ${total} (${Math.round(75+done/total*5)}%)`));return bmj;}
-   const lines=pages.flatMap(items=>items.filter(i=>i.str?.trim()).sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]).map(i=>i.str));
-   return parseStructured(lines.join('\n'));
+   const pageTexts=pages.map(items=>items.filter(i=>i.str?.trim()).sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]).map(i=>i.str).join('\n'));
+   let questions=parseStructured(pageTexts.join('\n'));
+   const scanned=pageTexts.map((text,index)=>text.trim().length<45?index+1:null).filter(Boolean);
+   if(!scanned.length&&questions.length)return questions;
+   if(!scanned.length)throw new Error(`${item.file.name}: text is selectable, but the question/option layout was not recognized. OCR is not needed for this file.`);
+   item.state=`OCR: 0/${scanned.length} pages`;render();
+   const recognized=await ocrPdfPages(pdfjs,scanned,(fraction,message)=>{
+    item.state=`OCR: ${Math.round(fraction*scanned.length)}/${scanned.length} pages`;
+    report(50+fraction*35,`${item.file.name}: ${message}`);render();
+   });
+   for(const [number,text] of recognized)pageTexts[number-1]=text;
+   questions=parseStructured(pageTexts.join('\n'));
+   if(!questions.length)throw new Error(`${item.file.name}: OCR read ${scanned.length} page(s), but could not identify numbered questions and A–E choices. Try a clearer scan or a text-based export.`);
+   return questions;
   }finally{await pdfjs.destroy()}
  }
  if(['txt','md','docx','html','htm'].includes(ext(item.file.name))){const blocks=await contentBlocks(item.file);return parseStructured(blocks.map(b=>b.text||'').join('\n'));}
@@ -68,7 +114,7 @@ async function convert(){
      const percent=Math.round((i+value/100)/candidates.length*75);
      setProgress(percent,`${message.replace(/ \(\d+%\)$/,'')} · file ${i+1}/${candidates.length} (${percent}%)`);
     });
-    if(!item.questions.length)throw new Error(`No supported questions in ${item.file.name}. Scanned pages need OCR.`);
+    if(!item.questions.length)throw new Error(`No numbered questions with A–E choices found in ${item.file.name}.`);
     allQuestions.push(...item.questions);
     item.state=`${item.questions.length} questions added`;render();
     setProgress(Math.round((i+1)/candidates.length*75),`Analyzed ${i+1} of ${candidates.length} files · ${allQuestions.length} questions`);
