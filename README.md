@@ -1,53 +1,23 @@
 # PDF Interactive Studio
 
-Convert documents and images into PDFs with clickable page navigation, editable notes and review checkboxes. File contents are processed locally in the browser, without uploads or API keys.
-
-## Run locally
-
-Requires Node.js 20 or later.
-
-```sh
-npm ci
-npm run build
-npm start
-```
-
-Open http://localhost:3000. The build copies pinned browser libraries and their licenses from installed dependencies into `dist/vendor/`. Serve the completed `dist/` folder with any static host. There is no server-side conversion service.
+Static, private-by-default browser application. Serve `dist/` with a static web server. No API keys or backend are required. Files are processed in memory and are not uploaded. Reloading clears the queue and generated files.
 
 ## Features
-
-- Batch file conversion with per-file error reporting
-- Clickable source-page index and reading worksheets
-- Selectable A-E radio answers beside recognized MCQ options in text-based PDFs
-- Editable PDF AcroForm notes and page-review checkboxes
-- Individual downloads or a ZIP of successful conversions
-- Preservation of original PDF pages and existing form fields
-- DOCX text and images, PPTX slide text and raster images, spreadsheet cell values, plain text, HTML text and common image formats
-
-## Supported inputs
-
-PDF, DOCX, PPTX, XLSX, XLS, CSV, TSV, TXT, MD, JSON, HTML, HTM, PNG, JPG, JPEG, WebP, BMP and GIF.
+- New quiz PDF mode rebuilds text-based question banks without printed ticks or answers; each choice links to a red/green result page with the correct answer and explanation
+- BMJ OnExamination answer-key extraction checks highlighted answer rows; uncertain keys and explanations are shown for review before export
+- Source figures tagged Photographic are preserved on linked figure pages without the printed options
+- Batch PDF conversion and per-file errors
+- Clickable source-page index with internal PDF links
+- Editable AcroForm notes and page-review checkboxes
+- Individual PDF downloads and a ZIP of successful outputs
+- Original PDF pages and existing form fields retained
+- DOCX text and raster images; PPTX text and raster images; spreadsheets as cell values; plain text, HTML text and common raster images
 
 ## Limitations
+Quiz mode requires selectable text and recognized question/answer structure. Scans need OCR. Layouts other than the supported structured A–E format and BMJ OnExamination may need editing or cannot be extracted. Review the question bank against the source before relying on its keys; color extraction is specific to BMJ's highlighted rows. Figures not tagged Photographic might require manual review. Quiz feedback uses ordinary PDF page links rather than PDF JavaScript, so the selected option is colored on the result page. Long questions or explanations may need shortening. Reflowed legacy text is rasterized for Unicode support, so it is not selectable/searchable. Office layouts, charts and vector artwork are not preserved. Digital signatures do not survive modification. Encrypted PDFs are rejected. Browser memory determines practical file limits; there is no artificial size limit.
 
-Office documents are reflowed: complex formatting, charts and vector artwork are not preserved. Reflowed text is rasterized for Unicode support and is not searchable. Images and scans remain images; no OCR is provided. MCQ recognition needs extractable text and five choices; printed answers remain visible. Animated images use the first frame. Password-protected PDFs are rejected. Modifying a digitally signed PDF invalidates its signature, so use an unsigned copy.
-
-There is no AI question generation, automatic answer scoring or embedded media support. Browser memory determines practical file limits; no artificial size limit is imposed. Fillable fields work best in Adobe Acrobat Reader. Use English for worksheet titles and form notes; standard PDF form fonts do not cover every writing system. Reloading the page clears files and outputs.
-
-## Tests
-
-```sh
-npm test
-```
-
-Integration tests use jsdom and a native canvas adapter. They cover a 31-page PDF, preservation of an existing form field, new notes and checkboxes, text and CSV conversion, invalid PDF rejection, a mixed conversion queue and ZIP generation. Temporary test PDFs are written to `tmp/qa/`. Full browser visual testing is not included.
-
-## Static hosting
-
-Install command: `npm ci`  
-Build command: `npm run build`  
-Output directory: `dist`
+## Verification
+`npm ci` then `node test.cjs` runs integration checks using jsdom and a native canvas adapter. Tests write only temporary fixtures beneath `/workspace/scratch/d84423f2b585/qa`. The original 31-page PDF test verifies existing field retention, 31 review boxes, two notes fields and multiple index pages. Browser visual QA was unavailable in this environment.
 
 ## Dependencies
-
-pdf-lib, PDF.js, JSZip, Mammoth and SheetJS. Dependency versions are locked in `package-lock.json`. Their license files are copied with the browser bundles. No remote scripts or analytics are used.
+Vendor copies from pinned npm packages: pdf-lib, JSZip, Mammoth, SheetJS. Corresponding license files are in `dist/vendor/`. No remote scripts or analytics.
