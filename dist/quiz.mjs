@@ -118,8 +118,10 @@ export async function inferBmjAnswerColors(pdfjs, questions, onProgress=()=>{}) 
   return questions;
 }
 
-export async function captureBmjFigures(pdfjs,questions){
-  for(const q of questions.filter(q=>q.hasVisual)){
+export async function captureBmjFigures(pdfjs,questions,onProgress=()=>{}){
+  const figures=questions.filter(q=>q.hasVisual);
+  for(let index=0;index<figures.length;index++){
+    const q=figures[index];
     const page=await pdfjs.getPage(q.sourcePage),scale=.85;
     const canvas=document.createElement('canvas');canvas.width=Math.ceil(page.view[2]*scale);canvas.height=Math.ceil(page.view[3]*scale);
     const ctx=canvas.getContext('2d');await page.render({canvasContext:ctx,viewport:page.getViewport({scale})}).promise;
@@ -128,6 +130,8 @@ export async function captureBmjFigures(pdfjs,questions){
     const crop=document.createElement('canvas');crop.width=width;crop.height=height;
     crop.getContext('2d').drawImage(canvas,sourceX,sourceY,width,height,0,0,width,height);
     q.visualData=crop.toDataURL('image/jpeg',.82);canvas.width=0;canvas.height=0;crop.width=0;crop.height=0;
+    onProgress(index+1,figures.length);
+    await new Promise(resolve=>setTimeout(resolve,0));
   }
 }
 
@@ -156,7 +160,7 @@ function goto(doc, page, rectangle, target) {
   annotation.set(PDFName.of('A'),doc.context.obj({S:PDFName.of('GoTo'),D:destination}));
   page.node.addAnnot(doc.context.register(annotation));
 }
-export async function buildQuizPdf(questions, title) {
+export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
   if (!questions.length || validateQuiz(questions).length) throw new Error('Review every answer and explanation before creating the quiz.');
   const {PDFDocument,StandardFonts,rgb} = globalThis.PDFLib;
   const doc = await PDFDocument.create(), regular = await doc.embedFont(StandardFonts.Helvetica), bold = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -200,7 +204,9 @@ export async function buildQuizPdf(questions, title) {
       result.drawText('Try this question again',{x:42,y:69,size:11,font:bold,color:blue}); goto(doc,result,[40,63,230,84],page);
       if (questionPages[qi+1]) {result.drawText('Next question  >',{x:390,y:69,size:11,font:bold,color:blue});goto(doc,result,[382,63,555,84],questionPages[qi+1]);}
     });
+    if(qi%5===0||qi===questions.length-1){onProgress(qi+1,questions.length);await new Promise(resolve=>setTimeout(resolve,0));}
   }
   doc.setTitle(ascii(title)); doc.setCreator('PDF Interactive Studio - Quiz PDF');
+  onProgress(questions.length,questions.length,'Saving PDF');
   return {bytes:await doc.save({useObjectStreams:true}),pages:doc.getPageCount(),sourcePages:questions.length,mcqs:questions.length};
 }
