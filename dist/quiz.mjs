@@ -155,7 +155,7 @@ function goto(doc, page, rectangle, target) {
   const {PDFName, PDFArray,PDFNumber} = globalThis.PDFLib;
   const destination = PDFArray.withContext(doc.context);
   destination.push(target.ref); destination.push(PDFName.of('XYZ'));
-  destination.push(PDFNumber.of(0));destination.push(PDFNumber.of(target.getHeight()));destination.push(PDFNumber.of(0));
+  destination.push(PDFNumber.of(0));destination.push(PDFNumber.of(target.getHeight()*1.5));destination.push(PDFNumber.of(0));
   const annotation = doc.context.obj({Type:PDFName.of('Annot'),Subtype:PDFName.of('Link'),Rect:rectangle,Border:[0,0,0]});
   annotation.set(PDFName.of('A'),doc.context.obj({S:PDFName.of('GoTo'),D:destination}));
   page.node.addAnnot(doc.context.register(annotation));
@@ -166,14 +166,22 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
   const doc = await PDFDocument.create(), regular = await doc.embedFont(StandardFonts.Helvetica), bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const ink = rgb(.11,.17,.27), green = rgb(.08,.47,.28), red = rgb(.74,.15,.17), amber = rgb(.52,.36,.09), blue = rgb(.15,.32,.75), grey = rgb(.39,.45,.54);
   const questionPages = [], feedbackPages = [], visualPages=[];
+  const heading = ascii(title.trim() || 'MCQ Question Bank');
+  const header = (page, label, color) => {
+    page.drawRectangle({x:0,y:794,width:595,height:48,color});
+    let short=heading;
+    while(short.length && bold.widthOfTextAtSize(short,12)>510) short=short.slice(0,-1);
+    if(short!==heading) short=short.slice(0,-3)+'...';
+    page.drawText(short,{x:42,y:819,size:12,font:bold,color:rgb(1,1,1)});
+    page.drawText(label,{x:42,y:801,size:10,font:bold,color:rgb(1,1,1)});
+  };
   for (const q of questions) {
     const question = doc.addPage([595,842]); questionPages.push(question);
     const results = q.options.map(() => doc.addPage([595,842])); feedbackPages.push(results);visualPages.push(q.visualData?doc.addPage([595,842]):null);
   }
   for (let qi=0; qi<questions.length; qi++) {
     const q=questions[qi], page=questionPages[qi], results=feedbackPages[qi];
-    page.drawRectangle({x:0,y:794,width:595,height:48,color:blue});
-    page.drawText(`QUESTION ${qi+1} / ${questions.length}`,{x:42,y:812,size:12,font:bold,color:rgb(1,1,1)});
+    header(page,`QUESTION ${qi+1} / ${questions.length}`,blue);
     let y=754,stemSize=12,stemLine=17;
     const minOptionHeight=58;
     while(stemSize>9 && y-lineCount(q.stem,regular,stemSize,510)*stemLine-34-q.options.length*minOptionHeight<65){stemSize--;stemLine=stemSize*1.38;}
@@ -190,11 +198,10 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
     });
     if(visualPages[qi]){page.drawText('View source figure  >',{x:42,y:42,size:10,font:bold,color:blue});goto(doc,page,[40,36,188,56],visualPages[qi]);}
     else page.drawText('Choose one option to check your answer.',{x:42,y:42,size:10,font:regular,color:grey});
-    if(visualPages[qi]){const figure=visualPages[qi],image=await doc.embedJpg(q.visualData),ratio=Math.min(510/image.width,670/image.height);figure.drawText(`SOURCE FIGURE · QUESTION ${qi+1}`,{x:42,y:780,size:13,font:bold,color:ink});figure.drawImage(image,{x:42,y:750-image.height*ratio,width:image.width*ratio,height:image.height*ratio});figure.drawText('Back to question',{x:42,y:42,size:11,font:bold,color:blue});goto(doc,figure,[40,35,210,60],page);}
+    if(visualPages[qi]){const figure=visualPages[qi],image=await doc.embedJpg(q.visualData),ratio=Math.min(510/image.width,670/image.height);header(figure,`SOURCE FIGURE · QUESTION ${qi+1}`,blue);figure.drawImage(image,{x:42,y:750-image.height*ratio,width:image.width*ratio,height:image.height*ratio});figure.drawText('Back to question',{x:42,y:42,size:11,font:bold,color:blue});goto(doc,figure,[40,35,210,60],page);}
     results.forEach((result,oi) => {
       const hasAnswer=Number.isInteger(q.answer),correct=hasAnswer&&oi===q.answer,accent=hasAnswer?(correct?green:red):amber;
-      result.drawRectangle({x:0,y:794,width:595,height:48,color:accent});
-      result.drawText(hasAnswer?(correct?'CORRECT ANSWER':'INCORRECT ANSWER'):'NO ANSWER FOR THIS QUESTION',{x:42,y:812,size:14,font:bold,color:rgb(1,1,1)});
+      header(result,hasAnswer?(correct?'CORRECT ANSWER':'INCORRECT ANSWER'):'NO ANSWER FOR THIS QUESTION',accent);
       let ry=750;
       ry=drawWrapped(result,`Your choice: ${letters[oi]}. ${q.options[oi]}`,42,ry,510,bold,12,accent,18)-24;
       ry=drawWrapped(result,hasAnswer?`Correct answer: ${letters[q.answer]}. ${q.options[q.answer]}`:'No answer for this question',42,ry,510,bold,12,hasAnswer?green:amber,18)-32;
@@ -206,6 +213,9 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
     });
     if(qi%5===0||qi===questions.length-1){onProgress(qi+1,questions.length);await new Promise(resolve=>setTimeout(resolve,0));}
   }
+  // A 100% PDF viewer now displays the old page's content at 150% size.
+  // Scale link rectangles as well as visible content so choices remain clickable.
+  for(const page of doc.getPages()) page.scale(1.5,1.5);
   doc.setTitle(ascii(title)); doc.setCreator('PDF Interactive Studio - Quiz PDF');
   onProgress(questions.length,questions.length,'Saving PDF');
   return {bytes:await doc.save({useObjectStreams:true}),pages:doc.getPageCount(),sourcePages:questions.length,mcqs:questions.length};

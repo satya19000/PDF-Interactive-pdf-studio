@@ -12,7 +12,7 @@ function render(){
  for(const item of queue){const row=el('div','file');row.append(el('div','fileicon',ext(item.file.name).toUpperCase()));const info=el('div','fileinfo');info.append(el('div','filename',item.file.name),el('div','filemeta'+(item.error?' error':''),item.error||`${human(item.file.size)} · ${item.state||'Ready'}`));const remove=el('button','textbtn','×');remove.setAttribute('aria-label','Remove '+item.file.name);remove.disabled=busy;remove.onclick=()=>{queue=queue.filter(i=>i!==item);render()};row.append(info,remove);$('queue').append(row)}
  const quiz=$('quizMode').checked;$('legacyOptions').hidden=quiz;
  $('convert').disabled=busy||!queue.some(i=>!i.unsupported);
- $('convert').firstChild.textContent=quiz?'Create quiz PDF ':'Create interactive PDFs ';
+ $('convert').firstChild.textContent=quiz?'Create one quiz PDF ':'Create interactive PDFs ';
  $('clear').disabled=busy||!queue.length;$('files').disabled=busy;$('demo').disabled=busy;
  for(const id of ['title','quizMode','index','mcqs','notes','checks','size'])$(id).disabled=busy;
 }
@@ -31,7 +31,7 @@ function heading(page,kind){page.drawRectangle({x:0,y:824,width:595,height:18,co
 if(opts.index){for(let i=0;i<Math.ceil(n/perIndex);i++){const p=doc.insertPage(i,[595,842]);heading(p,'Your page index');indices.push(p)}for(let i=0;i<n;i++){const p=indices[Math.floor(i/perIndex)];link(doc,p,`Source page ${i+1}`,52,704-(i%perIndex)*21,source[i],regular)}}
 if(opts.notes||opts.checks){const count=opts.checks?Math.ceil(n/18):1;for(let k=0;k<count;k++){const p=doc.addPage([595,842]);heading(p,'Reading worksheet'+(count>1?` ${k+1}`:''));worksheetPages.push(p);let y=704;if(opts.checks){p.drawText('Mark completed pages',{x:48,y,size:12,font:bold});y-=30;for(let i=k*18;i<Math.min(n,(k+1)*18);i++){const c=form.createCheckBox(prefix+'_review_'+i);c.addToPage(p,{x:50,y:y-3,width:13,height:13,borderWidth:1,borderColor:rgb(.5,.58,.75)});link(doc,p,`Source page ${i+1}`,76,y,source[i],regular);y-=23;}}if(opts.notes){y-=20;p.drawText('My notes',{x:48,y,size:12,font:bold});const field=form.createTextField(prefix+'_notes_'+k);field.enableMultiline();const height=Math.max(115,y-108);field.addToPage(p,{x:48,y:80,width:499,height,borderWidth:1,borderColor:rgb(.72,.77,.87),backgroundColor:rgb(.98,.985,1)});field.setFontSize(12);}if(indices.length)link(doc,p,'Back to page index',400,28,indices[0],regular);}}
 for(let i=0;i<indices.length;i++){const p=indices[i];if(i>0)link(doc,p,'Previous index',48,62,indices[i-1],regular);if(i+1<indices.length)link(doc,p,'Next index',220,62,indices[i+1],regular);if(worksheetPages.length)link(doc,p,'Open worksheet',400,62,worksheetPages[0],regular)}doc.setTitle(title);doc.setCreator('PDF Interactive Studio');return {bytes:await doc.save(),pages:doc.getPageCount(),sourcePages:n,mcqs:opts.mcqCount||0};}
-function showOutputs(){ $('results').hidden=!outputs.length;$('outputs').replaceChildren();for(const o of outputs){const row=el('div','output');const info=el('div','filename',o.name);info.append(el('small','',`${o.sourcePages} source pages · ${o.mcqs} interactive MCQs · ${o.pages} total pages · ${human(o.blob.size)}`));const a=el('a','download','Download PDF');a.href=o.url;a.download=o.name;row.append(el('div','fileicon','PDF'),info,a);$('outputs').append(row)}}
+function showOutputs(){ $('results').hidden=!outputs.length;$('zip').hidden=outputs.length<=1;$('outputs').replaceChildren();for(const o of outputs){const row=el('div','output');const info=el('div','filename',o.name);info.append(el('small','',`${o.sourcePages} ${o.quiz?'questions':'source pages'} · ${o.mcqs} interactive MCQs · ${o.pages} total pages · ${human(o.blob.size)}`));const a=el('a','download','Download PDF');a.href=o.url;a.download=o.name;row.append(el('div','fileicon','PDF'),info,a);$('outputs').append(row)}}
 function setProgress(value,message){$('progress').hidden=false;$('progress').value=Math.max(0,Math.min(100,value));$('progress').setAttribute('aria-label',message);$('status').textContent=message;}
 async function extractQuiz(item,report=setProgress){
  const {parseBmj,parseStructured,inferBmjAnswerColors,captureBmjFigures}=await import('./quiz.mjs');
@@ -56,23 +56,48 @@ async function convert(){
  if(busy)return;busy=true;outputs.forEach(o=>URL.revokeObjectURL(o.url));outputs=[];showOutputs();render();
  const candidates=queue.filter(i=>!i.unsupported),quiz=$('quizMode').checked;
  const opts={index:$('index').checked,notes:$('notes').checked,checks:$('checks').checked,mcqs:$('mcqs').checked};
+ if(quiz){
+  const allQuestions=[];let currentItem=null;
+  try{
+   if(queue.some(i=>i.unsupported))throw new Error('Remove unsupported files before creating one quiz PDF.');
+   if(!candidates.length)throw new Error('Add a question bank to begin.');
+   for(let i=0;i<candidates.length;i++){
+    const item=candidates[i];currentItem=item;item.error=null;item.state='Analyzing…';render();
+    await new Promise(resolve=>setTimeout(resolve,0));
+    if(!item.questions?.length)item.questions=await extractQuiz(item,(value,message)=>{
+     const percent=Math.round((i+value/100)/candidates.length*75);
+     setProgress(percent,`${message.replace(/ \(\d+%\)$/,'')} · file ${i+1}/${candidates.length} (${percent}%)`);
+    });
+    if(!item.questions.length)throw new Error(`No supported questions in ${item.file.name}. Scanned pages need OCR.`);
+    allQuestions.push(...item.questions);
+    item.state=`${item.questions.length} questions added`;render();
+    setProgress(Math.round((i+1)/candidates.length*75),`Analyzed ${i+1} of ${candidates.length} files · ${allQuestions.length} questions`);
+   }
+   const title=$('title').value.trim()||stem(candidates[0].file.name);
+   const {buildQuizPdf}=await import('./quiz.mjs');
+   const result=await buildQuizPdf(allQuestions,title,(current,total,phase)=>{
+    const percent=Math.round(75+(phase?24:current/total*24));
+    setProgress(percent,`${phase||'Building combined quiz'}: ${current} of ${total} questions (${percent}%)`);
+   });
+   const blob=new Blob([result.bytes],{type:'application/pdf'});
+   const filename=(title.replace(/[\\/:*?"<>|]/g,'-').trim().slice(0,90)||'Question Bank')+'-quiz.pdf';
+   outputs.push({...result,quiz:true,bytes:undefined,blob,url:URL.createObjectURL(blob),name:filename});
+   for(const item of candidates)item.state=`Included · ${item.questions.length} questions`;
+   const unknown=allQuestions.filter(q=>!Number.isInteger(q.answer)).length;
+   setProgress(100,`One PDF ready: ${candidates.length} files, ${allQuestions.length} numbered questions${unknown?`, ${unknown} with no answer`:''}.`);
+  }catch(e){
+   if(currentItem)currentItem.error=e.message||'Question extraction failed.';
+   setProgress(0,e.message||'Conversion failed. Check the file queue.');
+  }finally{busy=false;render();showOutputs();if(outputs.length)$('results').scrollIntoView?.({behavior:'smooth'});}
+  return;
+ }
  let done=0;setProgress(0,'Starting conversion (0%)');
  for(const item of candidates){
   item.error=null;item.state='Converting…';render();
   try{
    await new Promise(resolve=>setTimeout(resolve,30));
    const title=$('title').value.trim()||stem(item.file.name);let result;
-   if(quiz){
-    if(!item.questions?.length){setProgress(0,`Analyzing ${item.file.name}`);item.questions=await extractQuiz(item,(value,message)=>{const percent=Math.round((done+value/100*0.8)/candidates.length*100);setProgress(percent,message.replace(/\(\d+%\)$/,`(${percent}%)`));});}
-    if(!item.questions.length)throw new Error('No supported questions found. Scanned pages need OCR.');
-    const unknown=item.questions.filter(q=>!Number.isInteger(q.answer)).length;
-    item.state=`${item.questions.length} questions · ${unknown} without an answer`;render();
-    const {buildQuizPdf}=await import('./quiz.mjs');
-    result=await buildQuizPdf(item.questions,title,(current,total,phase)=>{
-     const percent=Math.round((done+0.8+(phase?0.18:current/total*0.18))/candidates.length*100);
-     setProgress(percent,`${phase||'Building quiz PDF'}: ${current} of ${total} questions (${percent}%)`);
-    });
-   }else{
+   {
     setProgress(done/candidates.length*100,`Converting ${item.file.name}`);
     const doc=await makeSource(item.file,Number($('size').value));let mcqCount=0;
     if(opts.mcqs&&ext(item.file.name)==='pdf'){
@@ -83,9 +108,9 @@ async function convert(){
     result=await interactive(doc,title,{...opts,mcqCount});
    }
    const blob=new Blob([result.bytes],{type:'application/pdf'});
-   let name=stem(item.file.name)+(quiz?'-quiz.pdf':'-interactive.pdf');
+   let name=stem(item.file.name)+'-interactive.pdf';
    if(outputs.some(o=>o.name===name))name=stem(item.file.name)+`-${done+1}-interactive.pdf`;
-   outputs.push({...result,bytes:undefined,blob,url:URL.createObjectURL(blob),name});item.state=`Converted${quiz?' · '+item.questions.filter(q=>!Number.isInteger(q.answer)).length+' with no answer':''}`;
+   outputs.push({...result,bytes:undefined,blob,url:URL.createObjectURL(blob),name});item.state='Converted';
   }catch(e){item.error=e.message||'Conversion failed. Try a text-based question bank.'}
   done++;$('progress').value=done/candidates.length*100;render();showOutputs();
  }
