@@ -18,6 +18,7 @@ Open http://localhost:3000. The build copies pinned browser libraries and their 
 
 - Batch file conversion with per-file error reporting
 - Clickable source-page index and reading worksheets
+- Selectable A-E radio answers beside recognized MCQ options in text-based PDFs
 - Editable PDF AcroForm notes and page-review checkboxes
 - Individual downloads or a ZIP of successful conversions
 - Preservation of original PDF pages and existing form fields
@@ -29,7 +30,7 @@ PDF, DOCX, PPTX, XLSX, XLS, CSV, TSV, TXT, MD, JSON, HTML, HTM, PNG, JPG, JPEG, 
 
 ## Limitations
 
-Office documents are reflowed: complex formatting, charts and vector artwork are not preserved. Reflowed text is rasterized for Unicode support and is not searchable. Images and scans remain images; no OCR is provided. Animated images use the first frame. Password-protected PDFs are rejected. Modifying a digitally signed PDF invalidates its signature, so use an unsigned copy.
+Office documents are reflowed: complex formatting, charts and vector artwork are not preserved. Reflowed text is rasterized for Unicode support and is not searchable. Images and scans remain images; no OCR is provided. MCQ recognition needs extractable text and five choices; printed answers remain visible. Animated images use the first frame. Password-protected PDFs are rejected. Modifying a digitally signed PDF invalidates its signature, so use an unsigned copy.
 
 There is no AI question generation, automatic answer scoring or embedded media support. Browser memory determines practical file limits; no artificial size limit is imposed. Fillable fields work best in Adobe Acrobat Reader. Use English for worksheet titles and form notes; standard PDF form fonts do not cover every writing system. Reloading the page clears files and outputs.
 
@@ -49,4 +50,4 @@ Output directory: `dist`
 
 ## Dependencies
 
-pdf-lib, JSZip, Mammoth and SheetJS. Dependency versions are locked in `package-lock.json`. Their license files are copied with the browser bundles. No remote scripts or analytics are used.
+pdf-lib, PDF.js, JSZip, Mammoth and SheetJS. Dependency versions are locked in `package-lock.json`. Their license files are copied with the browser bundles. No remote scripts or analytics are used.

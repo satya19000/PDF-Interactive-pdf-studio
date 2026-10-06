@@ -12,6 +12,9 @@ const assets = {
   'mammoth/LICENSE': 'mammoth-LICENSE.txt',
   'xlsx/dist/xlsx.full.min.js': 'xlsx.full.min.js',
   'xlsx/LICENSE': 'xlsx-LICENSE.txt',
+  'pdfjs-dist/build/pdf.mjs': 'pdf.mjs',
+  'pdfjs-dist/build/pdf.worker.mjs': 'pdf.worker.mjs',
+  'pdfjs-dist/LICENSE': 'pdfjs-LICENSE.txt',
 };
 for (const [source, target] of Object.entries(assets)) {
   fs.copyFileSync(path.join(root, 'node_modules', source), path.join(output, target));
