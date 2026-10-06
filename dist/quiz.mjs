@@ -136,7 +136,7 @@ export async function captureBmjFigures(pdfjs,questions,onProgress=()=>{}){
 }
 
 export function validateQuiz(questions) {
-  return questions.filter(q => !q.stem || q.options.length < 2 || !Number.isInteger(q.answer) || q.answer < 0 || q.answer >= q.options.length || !q.explanation || (q.hasVisual&&!q.visualData));
+  return questions.filter(q => !q.stem || q.options.length < 2 || q.options.length > 5 || (Number.isInteger(q.answer) && (q.answer < 0 || q.answer >= q.options.length)) || (q.hasVisual&&!q.visualData));
 }
 
 function ascii(value) { return String(value || '').replace(/[^\x20-\x7e]/g, c => ({'×':'x','µ':'u','μ':'u','°':' degrees ','–':'-','—':'-','’':"'"}[c] || ' ')); }
@@ -161,10 +161,10 @@ function goto(doc, page, rectangle, target) {
   page.node.addAnnot(doc.context.register(annotation));
 }
 export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
-  if (!questions.length || validateQuiz(questions).length) throw new Error('Review every answer and explanation before creating the quiz.');
+  if (!questions.length || validateQuiz(questions).length) throw new Error('Some questions could not be extracted. Try a text-based PDF with clear options.');
   const {PDFDocument,StandardFonts,rgb} = globalThis.PDFLib;
   const doc = await PDFDocument.create(), regular = await doc.embedFont(StandardFonts.Helvetica), bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const ink = rgb(.11,.17,.27), green = rgb(.08,.47,.28), red = rgb(.74,.15,.17), blue = rgb(.15,.32,.75), grey = rgb(.39,.45,.54);
+  const ink = rgb(.11,.17,.27), green = rgb(.08,.47,.28), red = rgb(.74,.15,.17), amber = rgb(.52,.36,.09), blue = rgb(.15,.32,.75), grey = rgb(.39,.45,.54);
   const questionPages = [], feedbackPages = [], visualPages=[];
   for (const q of questions) {
     const question = doc.addPage([595,842]); questionPages.push(question);
@@ -192,14 +192,14 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
     else page.drawText('Choose one option to check your answer.',{x:42,y:42,size:10,font:regular,color:grey});
     if(visualPages[qi]){const figure=visualPages[qi],image=await doc.embedJpg(q.visualData),ratio=Math.min(510/image.width,670/image.height);figure.drawText(`SOURCE FIGURE · QUESTION ${qi+1}`,{x:42,y:780,size:13,font:bold,color:ink});figure.drawImage(image,{x:42,y:750-image.height*ratio,width:image.width*ratio,height:image.height*ratio});figure.drawText('Back to question',{x:42,y:42,size:11,font:bold,color:blue});goto(doc,figure,[40,35,210,60],page);}
     results.forEach((result,oi) => {
-      const correct=oi===q.answer, accent=correct?green:red;
+      const hasAnswer=Number.isInteger(q.answer),correct=hasAnswer&&oi===q.answer,accent=hasAnswer?(correct?green:red):amber;
       result.drawRectangle({x:0,y:794,width:595,height:48,color:accent});
-      result.drawText(correct?'CORRECT ANSWER':'INCORRECT ANSWER',{x:42,y:812,size:14,font:bold,color:rgb(1,1,1)});
+      result.drawText(hasAnswer?(correct?'CORRECT ANSWER':'INCORRECT ANSWER'):'NO ANSWER FOR THIS QUESTION',{x:42,y:812,size:14,font:bold,color:rgb(1,1,1)});
       let ry=750;
       ry=drawWrapped(result,`Your choice: ${letters[oi]}. ${q.options[oi]}`,42,ry,510,bold,12,accent,18)-24;
-      ry=drawWrapped(result,`Correct answer: ${letters[q.answer]}. ${q.options[q.answer]}`,42,ry,510,bold,12,green,18)-32;
+      ry=drawWrapped(result,hasAnswer?`Correct answer: ${letters[q.answer]}. ${q.options[q.answer]}`:'No answer for this question',42,ry,510,bold,12,hasAnswer?green:amber,18)-32;
       result.drawText('EXPLANATION',{x:42,y:ry,size:12,font:bold,color:ink});
-      ry=drawWrapped(result,q.explanation,42,ry-27,510,regular,11,ink,16);
+      ry=drawWrapped(result,q.explanation?.trim()||'No explanation provided.',42,ry-27,510,regular,11,ink,16);
       if (ry < 100) throw new Error(`Explanation for question ${qi+1} is too long. Shorten it before export.`);
       result.drawText('Try this question again',{x:42,y:69,size:11,font:bold,color:blue}); goto(doc,result,[40,63,230,84],page);
       if (questionPages[qi+1]) {result.drawText('Next question  >',{x:390,y:69,size:11,font:bold,color:blue});goto(doc,result,[382,63,555,84],questionPages[qi+1]);}
