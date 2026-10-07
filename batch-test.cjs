@@ -7,9 +7,13 @@ w.Blob=Blob;w.File=File;w.URL.createObjectURL=()=> 'blob:test';w.URL.revokeObjec
 w.HTMLElement.prototype.scrollIntoView=()=>{};
 w.eval(fs.readFileSync('dist/vendor/pdf-lib.min.js','utf8'));
 const app=fs.readFileSync('dist/app.js','utf8').replaceAll("await import('./quiz.mjs')",'globalThis.__quizModule');
-w.eval(app);
+w.eval(app+';globalThis.__getOutputs=()=>outputs;');
 (async()=>{
- const quiz=await import('./dist/quiz.mjs');globalThis.PDFLib=require('pdf-lib');w.__quizModule=quiz;
+ const quiz=await import('./dist/quiz.mjs');globalThis.PDFLib=require('pdf-lib');
+ w.__quizModule={...quiz,buildQuizPdf:async (questions,title,progress,existing)=>{
+  if(existing)existing.doc=await globalThis.PDFLib.PDFDocument.load(new Uint8Array(await existing.doc.save()));
+  return quiz.buildQuizPdf(questions,title,progress,existing);
+ }};
  const spans=[
   ['Q-1',40,700],['Which choice?',40,680],['A.',40,650],['First',58,650],
   ['B.',40,630],['Second',58,630],['ANSWER:',40,600],['Second',40,580]
@@ -33,5 +37,24 @@ w.eval(app);
  assert(w.document.getElementById('status').textContent.includes('2 file(s); 2 skipped'));
  assert(w.document.getElementById('queue').textContent.includes('Skipped'));
  const result=w.document.querySelector('.download');assert.equal(result.download,'Combined subject-quiz.pdf');
- console.log('PASS: empty files skipped, later MCQs combined into one PDF.');
+ const base=await quiz.buildQuizPdf(quiz.parseStructured('Q1. Original question?\nA. Old correct\nB. Old wrong\nAnswer: A\nExplanation: Original explanation.'),'Combined subject');
+ w.document.getElementById('clear').click();
+ w.add([new File([base.bytes],'Combined subject-quiz.pdf',{type:'application/pdf'}),new File(['Q1. Added question?\nA. New wrong\nB. New correct\nAnswer: B'],'added.txt')]);
+ await w.convert();
+ const continued=await globalThis.PDFLib.PDFDocument.load(await w.__getOutputs()[0].blob.arrayBuffer());
+ assert.equal(continued.getTitle(),'Combined subject');
+ assert.equal(continued.getKeywords().includes('question-count:2'),true);
+ assert.equal(continued.getPageCount(),base.pages+3);
+ assert.equal(continued.getPage(0).node.Annots().size(),2);
+ assert.equal(continued.getPage(0).getWidth(),892.5);
+ assert.equal(continued.getPage(base.pages).getWidth(),892.5);
+ assert(w.document.getElementById('status').textContent.includes('1 existing + 1 new'));
+ fs.writeFileSync('/workspace/scratch/d84423f2b585/qa/continued-quiz.pdf',Buffer.from(await w.__getOutputs()[0].blob.arrayBuffer()));
+ const third=await quiz.buildQuizPdf(quiz.parseStructured('Q1. Third question?\nA. Yes\nB. No\nAnswer: A'),'Combined subject',()=>{},
+  {doc:continued,questionCount:2,originalPageCount:continued.getPageCount()});
+ const again=await globalThis.PDFLib.PDFDocument.load(third.bytes);
+ assert.equal(again.getKeywords().includes('question-count:3'),true);
+ assert.equal(again.getPage(0).node.Annots().size(),2);
+ assert.equal(again.getPage(base.pages).node.Annots().size(),2);
+ console.log('PASS: empty files skipped; old interactive quiz preserved; repeat continuation reaches question 3.');
 })().catch(e=>{console.error(e);process.exitCode=1});

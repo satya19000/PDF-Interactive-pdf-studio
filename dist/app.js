@@ -70,6 +70,25 @@ async function ocrPdfPages(pdfjs,pages,report,recognizeScannedPage){
  }finally{await worker?.terminate();}
  return {recognized,imageQuestions};
 }
+async function readExistingQuiz(file){
+ if(ext(file.name)!=='pdf')return null;
+ let doc;
+ try{doc=await PDFLib.PDFDocument.load(new Uint8Array(await file.arrayBuffer()));}catch{return null;}
+ if(doc.getCreator()!=='PDF Interactive Studio - Quiz PDF')return null;
+ let questionCount=Number(/question-count:(\d+)/.exec(doc.getKeywords()||'')?.[1]);
+ if(!questionCount){
+  // Quiz PDFs made before the count was stored also show it on the first page.
+  const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');
+  GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
+  const pdfjs=await getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+  try{
+   const first=(await (await pdfjs.getPage(1)).getTextContent()).items.map(i=>i.str||'').join(' ');
+   questionCount=Number(/QUESTION\s+1\s*\/\s*(\d+)/i.exec(first)?.[1]);
+  }finally{await pdfjs.destroy();}
+ }
+ if(!Number.isSafeInteger(questionCount)||questionCount<1)throw new Error('This quiz PDF has no readable question count. Please upload the original exported quiz PDF.');
+ return {doc,questionCount,originalPageCount:doc.getPageCount(),title:doc.getTitle()||stem(file.name)};
+}
 async function extractQuiz(item,report=setProgress){
  const {parseBmj,parseStructured,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,recognizeScannedPage}=await import('./quiz.mjs');
  if(ext(item.file.name)==='pdf'){
@@ -111,7 +130,7 @@ async function convert(){
  const candidates=queue.filter(i=>!i.unsupported),quiz=$('quizMode').checked;
  const opts={index:$('index').checked,notes:$('notes').checked,checks:$('checks').checked,mcqs:$('mcqs').checked};
  if(quiz){
-  const allQuestions=[],included=[],skipped=[],failed=[];let currentItem=null;
+  const allQuestions=[],included=[],skipped=[],failed=[];let currentItem=null,existing=null;
   try{
    if(!candidates.length)throw new Error('Add a question bank to begin.');
    for(const item of queue.filter(i=>i.unsupported)){item.error=null;item.state='Skipped · unsupported format';skipped.push(item);}
@@ -119,6 +138,13 @@ async function convert(){
     const item=candidates[i];currentItem=item;item.error=null;item.skipReason=null;item.state='Analyzing…';render();
     try{
      await new Promise(resolve=>setTimeout(resolve,0));
+     const previous=await readExistingQuiz(item.file);
+     if(previous){
+      if(existing)throw new Error('Add only one existing quiz PDF as the continuation base.');
+      existing=previous;item.state=`Base quiz · ${previous.questionCount} questions`;render();
+      setProgress(Math.round((i+1)/candidates.length*75),`Existing quiz loaded: ${previous.questionCount} questions. Reading new files…`);
+      continue;
+     }
      if(!item.questions?.length)item.questions=await extractQuiz(item,(value,message)=>{
       const percent=Math.round((i+value/100)/candidates.length*75);
       setProgress(percent,`${message.replace(/ \(\d+%\)$/,'')} · file ${i+1}/${candidates.length} (${percent}%)`);
@@ -128,18 +154,18 @@ async function convert(){
     }catch(e){item.error=e.message||'Could not read this file';failed.push(item);}
     setProgress(Math.round((i+1)/candidates.length*75),`Checked ${i+1} of ${candidates.length} files · ${allQuestions.length} questions found`);render();
    }
-   if(!allQuestions.length){setProgress(100,`No recognizable MCQs found. ${skipped.length} skipped${failed.length?`, ${failed.length} failed`:''}. See the file list.`);return;}
-   const title=$('title').value.trim()||stem(included[0].file.name);
+   if(!allQuestions.length){setProgress(100,`No new recognizable MCQs found. ${skipped.length} skipped${failed.length?`, ${failed.length} failed`:''}. See the file list.`);return;}
+   const title=existing?.title||$('title').value.trim()||stem(included[0].file.name);
    const {buildQuizPdf}=await import('./quiz.mjs');
    const result=await buildQuizPdf(allQuestions,title,(current,total,phase)=>{
     const percent=Math.round(75+(phase?24:current/total*24));
     setProgress(percent,`${phase||'Building combined quiz'}: ${current} of ${total} questions (${percent}%)`);
-   });
+   },existing);
    const blob=new Blob([result.bytes],{type:'application/pdf'});
    const filename=(title.replace(/[\\/:*?"<>|]/g,'-').trim().slice(0,90)||'Question Bank')+'-quiz.pdf';
    outputs.push({...result,quiz:true,bytes:undefined,blob,url:URL.createObjectURL(blob),name:filename});
    const unknown=allQuestions.filter(q=>!Number.isInteger(q.answer)).length;
-   setProgress(100,`One PDF ready: ${allQuestions.length} questions from ${included.length} file(s); ${skipped.length} skipped${failed.length?`, ${failed.length} failed`:''}${unknown?`; ${unknown} with no answer`:''}.`);
+   setProgress(100,`One PDF ready: ${result.mcqs} total questions${existing?` (${existing.questionCount} existing + ${allQuestions.length} new)`:` from ${included.length} file(s)`}; ${skipped.length} skipped${failed.length?`, ${failed.length} failed`:''}${unknown?`; ${unknown} new with no answer`:''}.`);
   }catch(e){
    if(currentItem)currentItem.error=e.message||'Question extraction failed.';
    setProgress(0,e.message||'Conversion failed. Check the file queue.');

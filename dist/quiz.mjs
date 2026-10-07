@@ -258,10 +258,12 @@ function goto(doc, page, rectangle, target) {
   annotation.set(PDFName.of('A'),doc.context.obj({S:PDFName.of('GoTo'),D:destination}));
   page.node.addAnnot(doc.context.register(annotation));
 }
-export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
+export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing=null) {
   if (!questions.length || validateQuiz(questions).length) throw new Error('Some questions could not be extracted. Try a text-based PDF with clear options.');
   const {PDFDocument,StandardFonts,rgb} = globalThis.PDFLib;
-  const doc = await PDFDocument.create(), regular = await doc.embedFont(StandardFonts.Helvetica), bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const startNumber=existing?.questionCount||0;
+  const totalQuestions=startNumber+questions.length;
+  const doc = existing?.doc||await PDFDocument.create(), regular = await doc.embedFont(StandardFonts.Helvetica), bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const ink = rgb(.11,.17,.27), green = rgb(.08,.47,.28), red = rgb(.74,.15,.17), amber = rgb(.52,.36,.09), blue = rgb(.15,.32,.75), grey = rgb(.39,.45,.54);
   const questionPages = [], feedbackPages = [], visualPages=[];
   const heading = ascii(title.trim() || 'MCQ Question Bank');
@@ -279,11 +281,11 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
   }
   for (let qi=0; qi<questions.length; qi++) {
     const q=questions[qi], page=questionPages[qi], results=feedbackPages[qi];
-    header(page,`QUESTION ${qi+1} / ${questions.length}`,blue);
+    header(page,`QUESTION ${startNumber+qi+1} / ${totalQuestions}`,blue);
     let y=754,stemSize=12,stemLine=17;
     const minOptionHeight=58;
     while(stemSize>9 && y-lineCount(q.stem,regular,stemSize,510)*stemLine-34-q.options.length*minOptionHeight<65){stemSize--;stemLine=stemSize*1.38;}
-    if(y-lineCount(q.stem,regular,stemSize,510)*stemLine-34-q.options.length*minOptionHeight<65)throw new Error(`Question ${qi+1} is too long for one quiz page. Edit its stem before export.`);
+    if(y-lineCount(q.stem,regular,stemSize,510)*stemLine-34-q.options.length*minOptionHeight<65)throw new Error(`Question ${startNumber+qi+1} is too long for one quiz page. Edit its stem before export.`);
     y=drawWrapped(page,q.stem,42,y,510,regular,stemSize,ink,stemLine)-34;
     q.options.forEach((option,oi) => {
       const height=Math.max(minOptionHeight,Math.ceil(ascii(option).length/68)*16+26);
@@ -296,7 +298,7 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
     });
     if(visualPages[qi]){page.drawText('View source figure  >',{x:42,y:42,size:10,font:bold,color:blue});goto(doc,page,[40,36,188,56],visualPages[qi]);}
     else page.drawText('Choose one option to check your answer.',{x:42,y:42,size:10,font:regular,color:grey});
-    if(visualPages[qi]){const figure=visualPages[qi],image=await doc.embedJpg(q.visualData),ratio=Math.min(510/image.width,670/image.height);header(figure,`SOURCE FIGURE · QUESTION ${qi+1}`,blue);figure.drawImage(image,{x:42,y:750-image.height*ratio,width:image.width*ratio,height:image.height*ratio});figure.drawText('Back to question',{x:42,y:42,size:11,font:bold,color:blue});goto(doc,figure,[40,35,210,60],page);}
+    if(visualPages[qi]){const figure=visualPages[qi],image=await doc.embedJpg(q.visualData),ratio=Math.min(510/image.width,670/image.height);header(figure,`SOURCE FIGURE · QUESTION ${startNumber+qi+1}`,blue);figure.drawImage(image,{x:42,y:750-image.height*ratio,width:image.width*ratio,height:image.height*ratio});figure.drawText('Back to question',{x:42,y:42,size:11,font:bold,color:blue});goto(doc,figure,[40,35,210,60],page);}
     results.forEach((result,oi) => {
       const hasAnswer=Number.isInteger(q.answer),correct=hasAnswer&&oi===q.answer,accent=hasAnswer?(correct?green:red):amber;
       header(result,hasAnswer?(correct?'CORRECT ANSWER':'INCORRECT ANSWER'):'NO ANSWER FOR THIS QUESTION',accent);
@@ -313,7 +315,7 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
         const detailPages=[];
         for(let offset=0;offset<lines.length;offset+=38)detailPages.push(doc.addPage([595,842]));
         detailPages.forEach((detail,index)=>{
-          header(detail,`EXPLANATION · QUESTION ${qi+1} · PAGE ${index+1}/${detailPages.length}`,blue);
+          header(detail,`EXPLANATION · QUESTION ${startNumber+qi+1} · PAGE ${index+1}/${detailPages.length}`,blue);
           lines.slice(index*38,(index+1)*38).forEach((line,row)=>detail.drawText(line,{x:42,y:754-row*16,size:11,font:regular,color:ink}));
           detail.drawText(index?'Previous explanation page':'Back to result',{x:42,y:69,size:11,font:bold,color:blue});
           goto(doc,detail,[40,63,245,84],index?detailPages[index-1]:result);
@@ -329,8 +331,9 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
   }
   // A 100% PDF viewer now displays the old page's content at 150% size.
   // Scale link rectangles as well as visible content so choices remain clickable.
-  for(const page of doc.getPages()) page.scale(1.5,1.5);
+  for(const page of doc.getPages().slice(existing?.originalPageCount||0)) page.scale(1.5,1.5);
   doc.setTitle(ascii(title)); doc.setCreator('PDF Interactive Studio - Quiz PDF');
+  doc.setKeywords(['PDF Interactive Studio quiz',`question-count:${totalQuestions}`]);
   onProgress(questions.length,questions.length,'Saving PDF');
-  return {bytes:await doc.save({useObjectStreams:true}),pages:doc.getPageCount(),sourcePages:questions.length,mcqs:questions.length};
+  return {bytes:await doc.save({useObjectStreams:true}),pages:doc.getPageCount(),sourcePages:totalQuestions,mcqs:totalQuestions};
 }
