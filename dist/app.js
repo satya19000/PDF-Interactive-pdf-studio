@@ -68,7 +68,7 @@ async function ocrPdfPages(pdfjs,pages,report){
  return recognized;
 }
 async function extractQuiz(item,report=setProgress){
- const {parseBmj,parseStructured,inferBmjAnswerColors,captureBmjFigures}=await import('./quiz.mjs');
+ const {parseBmj,parseStructured,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures}=await import('./quiz.mjs');
  if(ext(item.file.name)==='pdf'){
   const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
   const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer()),disableFontFace:true}).promise;
@@ -79,11 +79,11 @@ async function extractQuiz(item,report=setProgress){
     if(p%10===0||p===pdfjs.numPages){item.state=`Reading ${p}/${pdfjs.numPages} pages`;report(p/pdfjs.numPages*50,`${item.file.name}: reading page ${p} of ${pdfjs.numPages} (${Math.round(p/pdfjs.numPages*50)}%)`);render();await new Promise(r=>setTimeout(r,0));}
    }
    const bmj=parseBmj(pages);if(bmj.length){await inferBmjAnswerColors(pdfjs,bmj,(done,total)=>{item.state=`Checking answer key ${done}/${total}`;report(50+done/total*25,`${item.file.name}: checking answers ${done} of ${total} (${Math.round(50+done/total*25)}%)`);render()});item.state='Preserving question figures…';report(75,`${item.file.name}: preserving question figures (75%)`);render();await captureBmjFigures(pdfjs,bmj,(done,total)=>report(75+done/total*5,`${item.file.name}: preserving figure ${done} of ${total} (${Math.round(75+done/total*5)}%)`));return bmj;}
-   const pageTexts=pages.map(items=>items.filter(i=>i.str?.trim()).sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]).map(i=>i.str).join('\n'));
+   const pageTexts=pages.map(items=>textLinesFromItems(items).join('\n'));
    let questions=parseStructured(pageTexts.join('\n'));
    const scanned=pageTexts.map((text,index)=>text.trim().length<45?index+1:null).filter(Boolean);
    if(!scanned.length&&questions.length)return questions;
-   if(!scanned.length)throw new Error(`${item.file.name}: text is selectable, but the question/option layout was not recognized. OCR is not needed for this file.`);
+   if(!scanned.length){item.skipReason='No recognized MCQs in selectable text';return [];}
    item.state=`OCR: 0/${scanned.length} pages`;render();
    const recognized=await ocrPdfPages(pdfjs,scanned,(fraction,message)=>{
     item.state=`OCR: ${Math.round(fraction*scanned.length)}/${scanned.length} pages`;
@@ -91,35 +91,41 @@ async function extractQuiz(item,report=setProgress){
    });
    for(const [number,text] of recognized)pageTexts[number-1]=text;
    questions=parseStructured(pageTexts.join('\n'));
-   if(!questions.length)throw new Error(`${item.file.name}: OCR read ${scanned.length} page(s), but could not identify numbered questions and A–E choices. Try a clearer scan or a text-based export.`);
+   if(!questions.length){item.skipReason=`OCR read ${scanned.length} page(s); no numbered MCQs with A–E choices recognized`;return [];}
    return questions;
   }finally{await pdfjs.destroy()}
  }
- if(['txt','md','docx','html','htm'].includes(ext(item.file.name))){const blocks=await contentBlocks(item.file);return parseStructured(blocks.map(b=>b.text||'').join('\n'));}
- throw new Error('Quiz extraction needs a text-based PDF, DOCX, TXT, MD or HTML file. Use original-layout mode for other formats.');
+ if(['png','jpg','jpeg','webp','bmp','gif'].includes(ext(item.file.name))){
+  await loadOcrEngine();const root=new URL('./vendor/',location.href).href;
+  let worker;try{report(10,`${item.file.name}: loading OCR model`);worker=await Tesseract.createWorker('eng',1,{workerPath:root+'worker.min.js',corePath:root+'ocr-core',langPath:root+'ocr-lang',workerBlobURL:false});const {data}=await worker.recognize(await rasterImage(item.file));report(80,`${item.file.name}: OCR complete`);return parseStructured(data.text||'');}finally{await worker?.terminate();}
+ }
+ const blocks=await contentBlocks(item.file);
+ return parseStructured(blocks.map(b=>b.text||'').join('\n'));
 }
 async function convert(){
  if(busy)return;busy=true;outputs.forEach(o=>URL.revokeObjectURL(o.url));outputs=[];showOutputs();render();
  const candidates=queue.filter(i=>!i.unsupported),quiz=$('quizMode').checked;
  const opts={index:$('index').checked,notes:$('notes').checked,checks:$('checks').checked,mcqs:$('mcqs').checked};
  if(quiz){
-  const allQuestions=[];let currentItem=null;
+  const allQuestions=[],included=[],skipped=[],failed=[];let currentItem=null;
   try{
-   if(queue.some(i=>i.unsupported))throw new Error('Remove unsupported files before creating one quiz PDF.');
    if(!candidates.length)throw new Error('Add a question bank to begin.');
+   for(const item of queue.filter(i=>i.unsupported)){item.error=null;item.state='Skipped · unsupported format';skipped.push(item);}
    for(let i=0;i<candidates.length;i++){
-    const item=candidates[i];currentItem=item;item.error=null;item.state='Analyzing…';render();
-    await new Promise(resolve=>setTimeout(resolve,0));
-    if(!item.questions?.length)item.questions=await extractQuiz(item,(value,message)=>{
-     const percent=Math.round((i+value/100)/candidates.length*75);
-     setProgress(percent,`${message.replace(/ \(\d+%\)$/,'')} · file ${i+1}/${candidates.length} (${percent}%)`);
-    });
-    if(!item.questions.length)throw new Error(`No numbered questions with A–E choices found in ${item.file.name}.`);
-    allQuestions.push(...item.questions);
-    item.state=`${item.questions.length} questions added`;render();
-    setProgress(Math.round((i+1)/candidates.length*75),`Analyzed ${i+1} of ${candidates.length} files · ${allQuestions.length} questions`);
+    const item=candidates[i];currentItem=item;item.error=null;item.skipReason=null;item.state='Analyzing…';render();
+    try{
+     await new Promise(resolve=>setTimeout(resolve,0));
+     if(!item.questions?.length)item.questions=await extractQuiz(item,(value,message)=>{
+      const percent=Math.round((i+value/100)/candidates.length*75);
+      setProgress(percent,`${message.replace(/ \(\d+%\)$/,'')} · file ${i+1}/${candidates.length} (${percent}%)`);
+     });
+     if(!item.questions.length){item.state=`Skipped · ${item.skipReason||'no recognizable MCQs found'}`;skipped.push(item);}
+     else {allQuestions.push(...item.questions);included.push(item);item.state=`Included · ${item.questions.length} questions`;}
+    }catch(e){item.error=e.message||'Could not read this file';failed.push(item);}
+    setProgress(Math.round((i+1)/candidates.length*75),`Checked ${i+1} of ${candidates.length} files · ${allQuestions.length} questions found`);render();
    }
-   const title=$('title').value.trim()||stem(candidates[0].file.name);
+   if(!allQuestions.length){setProgress(100,`No recognizable MCQs found. ${skipped.length} skipped${failed.length?`, ${failed.length} failed`:''}. See the file list.`);return;}
+   const title=$('title').value.trim()||stem(included[0].file.name);
    const {buildQuizPdf}=await import('./quiz.mjs');
    const result=await buildQuizPdf(allQuestions,title,(current,total,phase)=>{
     const percent=Math.round(75+(phase?24:current/total*24));
@@ -128,9 +134,8 @@ async function convert(){
    const blob=new Blob([result.bytes],{type:'application/pdf'});
    const filename=(title.replace(/[\\/:*?"<>|]/g,'-').trim().slice(0,90)||'Question Bank')+'-quiz.pdf';
    outputs.push({...result,quiz:true,bytes:undefined,blob,url:URL.createObjectURL(blob),name:filename});
-   for(const item of candidates)item.state=`Included · ${item.questions.length} questions`;
    const unknown=allQuestions.filter(q=>!Number.isInteger(q.answer)).length;
-   setProgress(100,`One PDF ready: ${candidates.length} files, ${allQuestions.length} numbered questions${unknown?`, ${unknown} with no answer`:''}.`);
+   setProgress(100,`One PDF ready: ${allQuestions.length} questions from ${included.length} file(s); ${skipped.length} skipped${failed.length?`, ${failed.length} failed`:''}${unknown?`; ${unknown} with no answer`:''}.`);
   }catch(e){
    if(currentItem)currentItem.error=e.message||'Question extraction failed.';
    setProgress(0,e.message||'Conversion failed. Check the file queue.');

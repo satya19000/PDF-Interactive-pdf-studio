@@ -3,28 +3,44 @@ const letters = 'ABCDE';
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
 const norm = value => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+export function textLinesFromItems(items) {
+  const lines=[];
+  for(const item of items){
+    if(!item.str?.trim()||!item.transform||item.transform.length<6)continue;
+    const y=item.transform[5],x=item.transform[4],last=lines.at(-1);
+    if(last&&Math.abs(last.y-y)<2&&x>=last.x-1){last.parts.push(item.str);last.x=x;}
+    else lines.push({y,x,parts:[item.str]});
+  }
+  return lines.map(line=>clean(line.parts.join(' '))).filter(Boolean);
+}
+
 export function parseStructured(text) {
   const questions = [];
-  const chunks = String(text).split(/(?=^\s*(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])\s+)/gim);
+  const questionStart = /^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])(?:\s+|$)/i;
+  const chunks = String(text).split(/(?=^\s*(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])(?:\s+|$))/gim);
   for (const chunk of chunks) {
     const lines = chunk.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
     if (/^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])$/i.test(lines[0] || '') && lines[1]) lines.splice(0,2,lines[0]+' '+lines[1]);
-    if (!/^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])\s+/i.test(lines[0] || '')) continue;
+    if (!questionStart.test(lines[0] || '')) continue;
     const options = [], stem = [], explanation = [];
-    let answer = null, inExplanation = false;
+    let answer = null, answerText = '', inExplanation = false, afterAnswer = false;
     stem.push(lines[0].replace(/^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])\s*/i,''));
     for (const line of lines.slice(1)) {
-      const a = /^(?:correct\s+)?answer\s*[:\-]\s*([A-E])(?:\b|[.)])/i.exec(line);
-      if (a) { answer = a[1].toUpperCase(); inExplanation = false; continue; }
+      const a = /^(?:correct\s+)?answer\s*[:\-]\s*(.*)$/i.exec(line);
+      if (a) { answerText=a[1].trim();afterAnswer=true;inExplanation=false;continue; }
       if (/^(?:explanation|discussion|rationale)\s*[:\-]?/i.test(line)) { inExplanation = true; explanation.push(line.replace(/^(?:explanation|discussion|rationale)\s*[:\-]?\s*/i, '')); continue; }
+      if (afterAnswer && !inExplanation) {answerText+=(answerText?' ':'')+line;continue;}
       const o = /^([A-E])[.)]\s+(.+)/i.exec(line);
       if (o && !inExplanation && options.length < 5) { options.push(clean(o[2])); continue; }
       if (inExplanation) explanation.push(line);
       else if (options.length) options[options.length - 1] += ' ' + line;
       else stem.push(line);
     }
+    const answerLetter=/^([A-E])(?:\b|[.)])/i.exec(answerText);
+    if(answerLetter)answer=letters.indexOf(answerLetter[1].toUpperCase());
+    else if(answerText){const exact=options.map(norm).findIndex(value=>value===norm(answerText));if(exact>=0)answer=exact;}
     if (options.length >= 2 && clean(stem.join(' '))) {
-      questions.push({ id: `structured-${questions.length + 1}`, stem: clean(stem.join(' ')), options, answer: answer&&letters.indexOf(answer)<options.length?letters.indexOf(answer):null, explanation: clean(explanation.join(' ')), sourcePage: null, verified:!!answer });
+      questions.push({ id: `structured-${questions.length + 1}`, stem: clean(stem.join(' ')), options, answer: Number.isInteger(answer)&&answer<options.length?answer:null, explanation: clean(explanation.join(' ')), sourcePage: null, verified:Number.isInteger(answer) });
     }
   }
   return questions;
@@ -142,13 +158,17 @@ export function validateQuiz(questions) {
 
 function ascii(value) { return String(value || '').replace(/[^\x20-\x7e]/g, c => ({'×':'x','µ':'u','μ':'u','°':' degrees ','–':'-','—':'-','’':"'"}[c] || ' ')); }
 function lineCount(text,font,size,width){let lines=1,line='';for(const word of ascii(text).split(/\s+/)){if(font.widthOfTextAtSize((line?line+' ':'')+word,size)<=width)line+=(line?' ':'')+word;else{lines++;line=word}}return lines}
-function drawWrapped(page, text, x, y, width, font, size, color, lineHeight = size * 1.42) {
+function wrappedLines(text,width,font,size) {
   const words = ascii(text).split(/\s+/), lines = []; let line = '';
   for (const word of words) {
     if (font.widthOfTextAtSize((line ? line + ' ' : '') + word, size) <= width) line += (line ? ' ' : '') + word;
     else { if (line) lines.push(line); line = word; }
   }
   if (line) lines.push(line);
+  return lines;
+}
+function drawWrapped(page, text, x, y, width, font, size, color, lineHeight = size * 1.42) {
+  const lines=wrappedLines(text,width,font,size);
   for (const row of lines) { page.drawText(row, {x,y,size,font,color}); y -= lineHeight; }
   return y;
 }
@@ -207,8 +227,24 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}) {
       ry=drawWrapped(result,`Your choice: ${letters[oi]}. ${q.options[oi]}`,42,ry,510,bold,12,accent,18)-24;
       ry=drawWrapped(result,hasAnswer?`Correct answer: ${letters[q.answer]}. ${q.options[q.answer]}`:'No answer for this question',42,ry,510,bold,12,hasAnswer?green:amber,18)-32;
       result.drawText('EXPLANATION',{x:42,y:ry,size:12,font:bold,color:ink});
-      ry=drawWrapped(result,q.explanation?.trim()||'No explanation provided.',42,ry-27,510,regular,11,ink,16);
-      if (ry < 100) throw new Error(`Explanation for question ${qi+1} is too long. Shorten it before export.`);
+      const explanation=q.explanation?.trim()||'No explanation provided.';
+      const lines=wrappedLines(explanation,510,regular,11),start=ry-27;
+      if(start-lines.length*16>=105){lines.forEach((line,index)=>result.drawText(line,{x:42,y:start-index*16,size:11,font:regular,color:ink}));}
+      else {
+        const previewCount=Math.max(0,Math.min(10,Math.floor((start-145)/16)));
+        lines.slice(0,previewCount).forEach((line,index)=>result.drawText(line,{x:42,y:start-index*16,size:11,font:regular,color:ink}));
+        const detailPages=[];
+        for(let offset=0;offset<lines.length;offset+=38)detailPages.push(doc.addPage([595,842]));
+        detailPages.forEach((detail,index)=>{
+          header(detail,`EXPLANATION · QUESTION ${qi+1} · PAGE ${index+1}/${detailPages.length}`,blue);
+          lines.slice(index*38,(index+1)*38).forEach((line,row)=>detail.drawText(line,{x:42,y:754-row*16,size:11,font:regular,color:ink}));
+          detail.drawText(index?'Previous explanation page':'Back to result',{x:42,y:69,size:11,font:bold,color:blue});
+          goto(doc,detail,[40,63,245,84],index?detailPages[index-1]:result);
+          if(detailPages[index+1]){detail.drawText('Continue  >',{x:420,y:69,size:11,font:bold,color:blue});goto(doc,detail,[412,63,555,84],detailPages[index+1]);}
+        });
+        result.drawText('Read full explanation  >',{x:42,y:112,size:11,font:bold,color:blue});
+        goto(doc,result,[40,105,250,130],detailPages[0]);
+      }
       result.drawText('Try this question again',{x:42,y:69,size:11,font:bold,color:blue}); goto(doc,result,[40,63,230,84],page);
       if (questionPages[qi+1]) {result.drawText('Next question  >',{x:390,y:69,size:11,font:bold,color:blue});goto(doc,result,[382,63,555,84],questionPages[qi+1]);}
     });
