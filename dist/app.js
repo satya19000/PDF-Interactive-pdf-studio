@@ -42,10 +42,10 @@ function loadOcrEngine(){
  });
  return ocrScriptPromise;
 }
-async function ocrPdfPages(pdfjs,pages,report){
+async function ocrPdfPages(pdfjs,pages,report,recognizeScannedPage){
  await loadOcrEngine();
  const root=new URL('./vendor/',location.href).href;
- let worker;const recognized=new Map();
+ let worker;const recognized=new Map(),imageQuestions=[];
  try{
   report(0,`Loading English OCR model for ${pages.length} scanned page(s)…`);
   worker=await Tesseract.createWorker('eng',1,{
@@ -58,17 +58,20 @@ async function ocrPdfPages(pdfjs,pages,report){
    const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
    try{
     await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
-    const {data}=await worker.recognize(canvas);
-    report((index+1)/pages.length,`OCR page ${index+1} of ${pages.length} · source page ${number}`);
-    recognized.set(number,data.text||'');
+    const result=await recognizeScannedPage(canvas,worker,number,imageQuestions.at(-1));
+    if(result.kind==='question')imageQuestions.push(result.question);
+    else if(result.kind==='feedback'){
+     const question=imageQuestions.at(-1);question.answer=result.answer;question.explanation=result.explanation;question.verified=true;
+    }else recognized.set(number,result.text||'');
+    report((index+1)/pages.length,`OCR page ${index+1} of ${pages.length} · source page ${number} · ${imageQuestions.length} MCQs found`);
    }finally{canvas.width=0;canvas.height=0;page.cleanup?.();}
    await new Promise(resolve=>setTimeout(resolve,0));
   }
  }finally{await worker?.terminate();}
- return recognized;
+ return {recognized,imageQuestions};
 }
 async function extractQuiz(item,report=setProgress){
- const {parseBmj,parseStructured,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures}=await import('./quiz.mjs');
+ const {parseBmj,parseStructured,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,recognizeScannedPage}=await import('./quiz.mjs');
  if(ext(item.file.name)==='pdf'){
   const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
   const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer()),disableFontFace:true}).promise;
@@ -81,17 +84,18 @@ async function extractQuiz(item,report=setProgress){
    const bmj=parseBmj(pages);if(bmj.length){await inferBmjAnswerColors(pdfjs,bmj,(done,total)=>{item.state=`Checking answer key ${done}/${total}`;report(50+done/total*25,`${item.file.name}: checking answers ${done} of ${total} (${Math.round(50+done/total*25)}%)`);render()});item.state='Preserving question figures…';report(75,`${item.file.name}: preserving question figures (75%)`);render();await captureBmjFigures(pdfjs,bmj,(done,total)=>report(75+done/total*5,`${item.file.name}: preserving figure ${done} of ${total} (${Math.round(75+done/total*5)}%)`));return bmj;}
    const pageTexts=pages.map(items=>textLinesFromItems(items).join('\n'));
    let questions=parseStructured(pageTexts.join('\n'));
-   const scanned=pageTexts.map((text,index)=>text.trim().length<45?index+1:null).filter(Boolean);
+   // Image-only banks often include selectable headers and page numbers (~80 characters).
+   const scanned=pageTexts.map((text,index)=>text.trim().length<180?index+1:null).filter(Boolean);
    if(!scanned.length&&questions.length)return questions;
    if(!scanned.length){item.skipReason='No recognized MCQs in selectable text';return [];}
    item.state=`OCR: 0/${scanned.length} pages`;render();
-   const recognized=await ocrPdfPages(pdfjs,scanned,(fraction,message)=>{
+   const {recognized,imageQuestions}=await ocrPdfPages(pdfjs,scanned,(fraction,message)=>{
     item.state=`OCR: ${Math.round(fraction*scanned.length)}/${scanned.length} pages`;
     report(50+fraction*35,`${item.file.name}: ${message}`);render();
-   });
+   },recognizeScannedPage);
    for(const [number,text] of recognized)pageTexts[number-1]=text;
-   questions=parseStructured(pageTexts.join('\n'));
-   if(!questions.length){item.skipReason=`OCR read ${scanned.length} page(s); no numbered MCQs with A–E choices recognized`;return [];}
+   questions=[...parseStructured(pageTexts.join('\n')),...imageQuestions];
+   if(!questions.length){item.skipReason=`OCR read ${scanned.length} page(s); no MCQs recognized`;return [];}
    return questions;
   }finally{await pdfjs.destroy()}
  }

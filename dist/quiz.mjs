@@ -14,6 +14,83 @@ export function textLinesFromItems(items) {
   return lines.map(line=>clean(line.parts.join(' '))).filter(Boolean);
 }
 
+// Detect the five shaded answer rows in image-only question banks.
+export function shadedOptionRows(imageData,width,height) {
+  const x=Math.floor(width*.93),rows=[];
+  const at=y=>{
+    const offset=(y*width+x)*4,r=imageData[offset],g=imageData[offset+1],b=imageData[offset+2];
+    if(g>r+18&&g>b+10&&g>100)return 'green';
+    if(r>=210&&r<241&&g>=198&&g<239&&b>=185&&b<232&&r>=g&&g>=b)return 'gray';
+    return null;
+  };
+  let kind=null,start=0;
+  for(let y=0;y<=height;y++){
+    const next=y<height?at(y):null;
+    if(next===kind)continue;
+    if(kind&&y-start>=Math.max(10,height*.009))rows.push({kind,top:start,bottom:y});
+    kind=next;start=y;
+  }
+  for(let i=0;i+4<rows.length;i++){
+    const group=rows.slice(i,i+5),height0=group[0].bottom-group[0].top;
+    if(group.every((row,j)=>!j||row.top-group[j-1].bottom<=Math.max(12,height0*.35)))return {group,rows};
+  }
+  return {group:null,rows};
+}
+
+export function imageQuizContentBounds(imageData,width,height) {
+  let left=width,top=height,right=0,bottom=0;
+  for(let y=Math.floor(height*.045);y<height*.955;y+=4){
+    for(let x=Math.floor(width*.03);x<width*.97;x+=4){
+      const i=(y*width+x)*4;
+      if(imageData[i]>=248&&imageData[i+1]>=248&&imageData[i+2]>=248)continue;
+      left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y);
+    }
+  }
+  if(right<=left||bottom<=top)return {x:0,y:0,width,height};
+  const margin=8,x=Math.max(0,left-margin),y=Math.max(0,top-margin);
+  return {x,y,width:Math.min(width,right+margin)-x,height:Math.min(height,bottom+margin)-y};
+}
+
+export async function recognizeScannedPage(canvas,worker,sourcePage,previousQuestion) {
+  const make=(width,height)=>{const c=document.createElement('canvas');c.width=Math.max(1,Math.round(width));c.height=Math.max(1,Math.round(height));return c;};
+  const bounds=imageQuizContentBounds(canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,canvas.width,canvas.height).data,canvas.width,canvas.height);
+  const crop=make(bounds.width,bounds.height);
+  crop.getContext('2d').drawImage(canvas,bounds.x,bounds.y,bounds.width,bounds.height,0,0,crop.width,crop.height);
+  const {group,rows}=shadedOptionRows(crop.getContext('2d',{willReadFrequently:true}).getImageData(0,0,crop.width,crop.height).data,crop.width,crop.height);
+  const region=(x,y,width,height,minWidth=1100)=>{
+    const scale=Math.max(1,Math.min(2.5,minWidth/width));
+    const out=make(width*scale,height*scale);
+    out.getContext('2d').drawImage(crop,x,y,width,height,0,0,out.width,out.height);
+    return out;
+  };
+  const read=async c=>{try{return (await worker.recognize(c)).data.text||'';}finally{c.width=0;c.height=0;}};
+  try{
+    if(group?.every(row=>row.kind==='gray')&&group[0].top>35){
+      const stem=clean(await read(region(0,0,crop.width,group[0].top-4)));
+      const startX=Math.round(crop.width*.08),stripWidth=Math.round(crop.width*.88);
+      const strip=make(stripWidth,group.reduce((n,row)=>n+row.bottom-row.top+12,0));
+      let offset=0;
+      for(const row of group){strip.getContext('2d').drawImage(crop,startX,row.top,stripWidth,row.bottom-row.top,0,offset,stripWidth,row.bottom-row.top);offset+=row.bottom-row.top+12;}
+      const scaled=make(Math.max(1100,strip.width),Math.max(1100,strip.width)*strip.height/strip.width);
+      scaled.getContext('2d').drawImage(strip,0,0,scaled.width,scaled.height);strip.width=0;strip.height=0;
+      let options=(await read(scaled)).split(/\r?\n/).map(clean).filter(Boolean);
+      if(options.length!==5){options=[];for(const row of group)options.push(clean(await read(region(startX,row.top,stripWidth,row.bottom-row.top))));}
+      options=options.map(value=>value.replace(/^[^A-Za-z]+(?=[A-Za-z])/,'').trim());
+      if(stem.length>=20&&options.length===5&&options.every(value=>value.length>=2))return {kind:'question',question:{id:`scan-${sourcePage}`,stem,options,answer:null,explanation:'',sourcePage,verified:false}};
+    }
+    if(group?.some(row=>row.kind==='green')&&previousQuestion?.sourcePage===sourcePage-1){
+      const answer=group.findIndex(row=>row.kind==='green');
+      const repeat=rows.find(row=>row.kind==='green'&&row.top>group[4].bottom+8);
+      const from=repeat?.bottom||group[4].bottom;
+      const next=rows.find(row=>row.kind==='gray'&&row.top>from+10);
+      const to=Math.min(crop.height,next?.top||from+crop.height*.22);
+      const explanation=to>from+15?clean(await read(region(0,from,crop.width,to-from))):'';
+      return {kind:'feedback',answer,explanation};
+    }
+    return {kind:'text',text:await read(region(0,0,crop.width,crop.height,1200))};
+  }finally{crop.width=0;crop.height=0;}
+}
+
 export function parseStructured(text) {
   const questions = [];
   const questionStart = /^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])(?:\s+|$)/i;
