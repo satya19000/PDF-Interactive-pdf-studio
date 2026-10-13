@@ -10,9 +10,9 @@ function render(){
  $('count').textContent=queue.length+' files';$('queue').replaceChildren();
  if(!queue.length)$('queue').append(el('div','empty','Your conversion queue will appear here.'));
  for(const item of queue){const row=el('div','file');row.append(el('div','fileicon',ext(item.file.name).toUpperCase()));const info=el('div','fileinfo');info.append(el('div','filename',item.file.name),el('div','filemeta'+(item.error?' error':''),item.error||`${human(item.file.size)} · ${item.state||'Ready'}`));const remove=el('button','textbtn','×');remove.setAttribute('aria-label','Remove '+item.file.name);remove.disabled=busy;remove.onclick=()=>{queue=queue.filter(i=>i!==item);render()};row.append(info,remove);$('queue').append(row)}
- const quiz=$('quizMode').checked;$('legacyOptions').hidden=quiz;
+ const quiz=$('quizMode').checked;$('legacyOptions').hidden=quiz;$('modeNotice').hidden=quiz;
  $('convert').disabled=busy||!queue.some(i=>!i.unsupported);
- $('convert').firstChild.textContent=quiz?'Create one quiz PDF ':'Create interactive PDFs ';
+ $('convert').firstChild.textContent=quiz?'Create interactive quiz PDF ':'Keep original pages with notes ';
  $('clear').disabled=busy||!queue.length;$('files').disabled=busy;$('demo').disabled=busy;
  for(const id of ['title','quizMode','index','mcqs','notes','checks','size'])$(id).disabled=busy;
 }
@@ -31,7 +31,7 @@ function heading(page,kind){page.drawRectangle({x:0,y:824,width:595,height:18,co
 if(opts.index){for(let i=0;i<Math.ceil(n/perIndex);i++){const p=doc.insertPage(i,[595,842]);heading(p,'Your page index');indices.push(p)}for(let i=0;i<n;i++){const p=indices[Math.floor(i/perIndex)];link(doc,p,`Source page ${i+1}`,52,704-(i%perIndex)*21,source[i],regular)}}
 if(opts.notes||opts.checks){const count=opts.checks?Math.ceil(n/18):1;for(let k=0;k<count;k++){const p=doc.addPage([595,842]);heading(p,'Reading worksheet'+(count>1?` ${k+1}`:''));worksheetPages.push(p);let y=704;if(opts.checks){p.drawText('Mark completed pages',{x:48,y,size:12,font:bold});y-=30;for(let i=k*18;i<Math.min(n,(k+1)*18);i++){const c=form.createCheckBox(prefix+'_review_'+i);c.addToPage(p,{x:50,y:y-3,width:13,height:13,borderWidth:1,borderColor:rgb(.5,.58,.75)});link(doc,p,`Source page ${i+1}`,76,y,source[i],regular);y-=23;}}if(opts.notes){y-=20;p.drawText('My notes',{x:48,y,size:12,font:bold});const field=form.createTextField(prefix+'_notes_'+k);field.enableMultiline();const height=Math.max(115,y-108);field.addToPage(p,{x:48,y:80,width:499,height,borderWidth:1,borderColor:rgb(.72,.77,.87),backgroundColor:rgb(.98,.985,1)});field.setFontSize(12);}if(indices.length)link(doc,p,'Back to page index',400,28,indices[0],regular);}}
 for(let i=0;i<indices.length;i++){const p=indices[i];if(i>0)link(doc,p,'Previous index',48,62,indices[i-1],regular);if(i+1<indices.length)link(doc,p,'Next index',220,62,indices[i+1],regular);if(worksheetPages.length)link(doc,p,'Open worksheet',400,62,worksheetPages[0],regular)}doc.setTitle(title);doc.setCreator('PDF Interactive Studio');return {bytes:await doc.save(),pages:doc.getPageCount(),sourcePages:n,mcqs:opts.mcqCount||0};}
-function showOutputs(){ $('results').hidden=!outputs.length;$('zip').hidden=outputs.length<=1;$('outputs').replaceChildren();for(const o of outputs){const row=el('div','output');const info=el('div','filename',o.name);info.append(el('small','',`${o.sourcePages} ${o.quiz?'questions':'source pages'} · ${o.mcqs} interactive MCQs · ${o.pages} total pages · ${human(o.blob.size)}`));const a=el('a','download','Download PDF');a.href=o.url;a.download=o.name;row.append(el('div','fileicon','PDF'),info,a);$('outputs').append(row)}}
+function showOutputs(){ $('results').hidden=!outputs.length;$('zip').hidden=outputs.length<=1;$('outputs').replaceChildren();for(const o of outputs){const row=el('div','output');const info=el('div','filename',o.name);info.append(el('small','',o.quiz?`${o.mcqs} interactive questions · ${o.pages} total pages · ${human(o.blob.size)}`:`Original layout · ${o.sourcePages} source pages · ${o.mcqs} ungraded choice markers · ${o.pages} total pages · ${human(o.blob.size)}`));const a=el('a','download','Download PDF');a.href=o.url;a.download=o.name;row.append(el('div','fileicon','PDF'),info,a);$('outputs').append(row)}}
 function setProgress(value,message){$('progress').hidden=false;$('progress').value=Math.max(0,Math.min(100,value));$('progress').setAttribute('aria-label',message);$('status').textContent=message;}
 let ocrScriptPromise;
 function loadOcrEngine(){
@@ -90,7 +90,7 @@ async function readExistingQuiz(file){
  return {doc,questionCount,originalPageCount:doc.getPageCount(),title:doc.getTitle()||stem(file.name)};
 }
 async function extractQuiz(item,report=setProgress){
- const {parseBmj,parseStructured,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,recognizeScannedPage}=await import('./quiz.mjs');
+ const {parseBmj,parseStructured,parseVisualOptionBank,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,captureVisualFigures,recognizeScannedPage}=await import('./quiz.mjs');
  if(ext(item.file.name)==='pdf'){
   const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
   const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer()),disableFontFace:true}).promise;
@@ -101,6 +101,8 @@ async function extractQuiz(item,report=setProgress){
     if(p%10===0||p===pdfjs.numPages){item.state=`Reading ${p}/${pdfjs.numPages} pages`;report(p/pdfjs.numPages*50,`${item.file.name}: reading page ${p} of ${pdfjs.numPages} (${Math.round(p/pdfjs.numPages*50)}%)`);render();await new Promise(r=>setTimeout(r,0));}
    }
    const bmj=parseBmj(pages);if(bmj.length){await inferBmjAnswerColors(pdfjs,bmj,(done,total)=>{item.state=`Checking answer key ${done}/${total}`;report(50+done/total*25,`${item.file.name}: checking answers ${done} of ${total} (${Math.round(50+done/total*25)}%)`);render()});item.state='Preserving question figures…';report(75,`${item.file.name}: preserving question figures (75%)`);render();await captureBmjFigures(pdfjs,bmj,(done,total)=>report(75+done/total*5,`${item.file.name}: preserving figure ${done} of ${total} (${Math.round(75+done/total*5)}%)`));return bmj;}
+   const visual=parseVisualOptionBank(pages);
+   if(visual.length){item.state=`Found ${visual.length} questions`;report(55,`${item.file.name}: ${visual.length} questions found; preserving source tables`);render();await captureVisualFigures(pdfjs,visual);return visual;}
    const pageTexts=pages.map(items=>textLinesFromItems(items).join('\n'));
    let questions=parseStructured(pageTexts.join('\n'));
    // Image-only banks often include selectable headers and page numbers (~80 characters).
@@ -189,8 +191,8 @@ async function convert(){
     result=await interactive(doc,title,{...opts,mcqCount});
    }
    const blob=new Blob([result.bytes],{type:'application/pdf'});
-   let name=stem(item.file.name)+'-interactive.pdf';
-   if(outputs.some(o=>o.name===name))name=stem(item.file.name)+`-${done+1}-interactive.pdf`;
+   let name=stem(item.file.name)+'-original-layout.pdf';
+   if(outputs.some(o=>o.name===name))name=stem(item.file.name)+`-${done+1}-original-layout.pdf`;
    outputs.push({...result,bytes:undefined,blob,url:URL.createObjectURL(blob),name});item.state='Converted';
   }catch(e){item.error=e.message||'Conversion failed. Try a text-based question bank.'}
   done++;$('progress').value=done/candidates.length*100;render();showOutputs();

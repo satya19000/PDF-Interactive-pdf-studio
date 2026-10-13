@@ -10,6 +10,18 @@ const app=fs.readFileSync('dist/app.js','utf8').replaceAll("await import('./quiz
 w.eval(app+';globalThis.__getOutputs=()=>outputs;');
 (async()=>{
  const quiz=await import('./dist/quiz.mjs');globalThis.PDFLib=require('pdf-lib');
+ const visualRows=[
+  ['A 26-year-old patient has a cough.',65,650],['Which diagnosis is most likely?',65,625],
+  ['A',72,555],['First option',98,555],['B',72,520],['Second option',98,520],
+  ['C',72,485],['Correct option',98,485],['D',72,450],['Fourth option',98,450],
+  ['E',72,415],['Fifth option',98,415],['Explanation',65,380],
+  ['C',72,345],['Correct option',98,345],['The correct explanation.',65,320]
+ ].map(([str,x,y])=>({str,width:str.length*5,transform:[1,0,0,1,x,y]}));
+ const visualQuestions=quiz.parseVisualOptionBank([visualRows]);
+ assert.equal(visualQuestions.length,1);
+ assert.equal(visualQuestions[0].stem.startsWith('A 26-year-old'),true);
+ assert.equal(visualQuestions[0].answer,2);
+ assert.equal(visualQuestions[0].explanation,'The correct explanation.');
  w.__quizModule={...quiz,buildQuizPdf:async (questions,title,progress,existing)=>{
   if(existing)existing.doc=await globalThis.PDFLib.PDFDocument.load(new Uint8Array(await existing.doc.save()));
   return quiz.buildQuizPdf(questions,title,progress,existing);

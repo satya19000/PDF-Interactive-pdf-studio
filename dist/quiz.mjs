@@ -14,6 +14,87 @@ export function textLinesFromItems(items) {
   return lines.map(line=>clean(line.parts.join(' '))).filter(Boolean);
 }
 
+// Recover reading order from PDFs whose text stream places options after the
+// explanation, even though the options are visibly above it on the page.
+export function visualPageLines(items) {
+  const rows=new Map();
+  for(const item of items){
+    if(!item.str||!item.transform||item.transform.length<6)continue;
+    const y=Math.round(item.transform[5]);
+    if(!rows.has(y))rows.set(y,[]);
+    rows.get(y).push(item);
+  }
+  return [...rows].sort((a,b)=>b[0]-a[0]).map(([y,parts])=>{
+    parts.sort((a,b)=>a.transform[4]-b.transform[4]);
+    const marker=parts.find(i=>/^[A-E]$/.test(i.str?.trim())&&i.transform[4]<90);
+    const next=marker&&parts.find(i=>i!==marker&&i.str?.trim()&&i.transform[4]>marker.transform[4]);
+    const option=marker&&next&&next.transform[4]>marker.transform[4]+marker.width+10;
+    return {y,text:clean(parts.map(i=>i.str).join('')),letter:option?marker.str.trim():null,
+      optionText:option?clean(parts.filter(i=>i!==marker).map(i=>i.str).join('')):''};
+  }).filter(row=>row.text);
+}
+
+export function parseVisualOptionBank(pages) {
+  const questions=[];
+  for(let pi=0;pi<pages.length;pi++){
+    const rows=visualPageLines(pages[pi]).filter(r=>r.y>75&&r.y<700);
+    for(let start=0;start<rows.length;start++){
+      if(rows[start].letter!=='A')continue;
+      const options=[],indices=[];let end=start;
+      for(let letter=0;letter<5;letter++){
+        while(end<rows.length&&!rows[end].letter){
+          if(options.length&&rows[end].y>75&&!/^Explanation\b/i.test(rows[end].text))options[options.length-1]+=' '+rows[end].text;
+          end++;
+        }
+        if(rows[end]?.letter!=='ABCDE'[letter]||!rows[end].optionText)break;
+        options.push(rows[end].optionText);indices.push(end);end++;
+      }
+      if(options.length!==5||!rows.slice(end,end+3).some(r=>/^Explanation\b/i.test(r.text)))continue;
+      const intro=rows.slice(0,start).filter(r=>!r.letter&&!/^\d{1,2}:\d{2}:\d{2}/.test(r.text));
+      const tableIndex=intro.findIndex(r=>/^Investigations?\s*:/i.test(r.text));
+      const stem=tableIndex<0?clean(intro.map(r=>r.text).join(' ')):
+        clean([...intro.slice(0,tableIndex).map(r=>r.text),'Investigations: view the source figure below.',
+          ...intro.slice(tableIndex+1).filter(r=>/[?]$/.test(r.text)).map(r=>r.text)].join(' '));
+      if(stem.length<25)continue;
+      let answer=null,explanation='';
+      const labelIndex=rows.findIndex((r,j)=>j>end&&r.letter&&options['ABCDE'.indexOf(r.letter)]===r.optionText);
+      if(labelIndex>=0){
+        answer='ABCDE'.indexOf(rows[labelIndex].letter);
+        const detail=[];
+        for(let j=labelIndex+1;j<rows.length&&!rows[j].letter;j++)detail.push(rows[j].text);
+        if(!detail.length&&pages[pi+1]){
+          for(const row of visualPageLines(pages[pi+1]).filter(r=>r.y>75&&r.y<790&&!/^MRCP Part 1 Study Library/i.test(r.text))){
+            if(row.letter||/^(?:Rate this question|Next Question|Previous Question)/i.test(row.text))break;
+            detail.push(row.text);
+          }
+        }
+        explanation=clean(detail.join(' '));
+      }
+      questions.push({id:`visual-${pi+1}-${start}`,stem,options,answer,
+        explanation,sourcePage:pi+1,verified:Number.isInteger(answer),
+        hasVisual:tableIndex>=0,sourceFigureBottom:rows[start].y});
+      break;
+    }
+  }
+  return questions;
+}
+
+export async function captureVisualFigures(pdfjs,questions){
+  for(const q of questions.filter(question=>question.hasVisual)){
+    const page=await pdfjs.getPage(q.sourcePage),scale=1.4,viewport=page.getViewport({scale});
+    const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+    const crop=document.createElement('canvas');
+    try{
+      await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+      const x=Math.round(56*scale),top=Math.round((page.view[3]-690)*scale);
+      const bottom=Math.round((page.view[3]-q.sourceFigureBottom-8)*scale);
+      crop.width=Math.round(Math.min(485*scale,canvas.width-x));crop.height=Math.max(1,bottom-top);
+      crop.getContext('2d').drawImage(canvas,x,top,crop.width,crop.height,0,0,crop.width,crop.height);
+      q.visualData=crop.toDataURL('image/jpeg',.92);
+    }finally{canvas.width=0;canvas.height=0;crop.width=0;crop.height=0;page.cleanup?.();}
+  }
+}
+
 // Detect the five shaded answer rows in image-only question banks.
 export function shadedOptionRows(imageData,width,height) {
   const x=Math.floor(width*.93),rows=[];
