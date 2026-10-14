@@ -346,7 +346,7 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
   const totalQuestions=startNumber+questions.length;
   const doc = existing?.doc||await PDFDocument.create(), regular = await doc.embedFont(StandardFonts.Helvetica), bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const ink = rgb(.11,.17,.27), green = rgb(.08,.47,.28), red = rgb(.74,.15,.17), amber = rgb(.52,.36,.09), blue = rgb(.15,.32,.75), grey = rgb(.39,.45,.54);
-  const questionPages = [], feedbackPages = [], visualPages=[];
+  const questionPages = [], answerPages = [], visualPages=[];
   const heading = ascii(title.trim() || 'MCQ Question Bank');
   const header = (page, label, color) => {
     page.drawRectangle({x:0,y:794,width:595,height:48,color});
@@ -358,10 +358,11 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
   };
   for (const q of questions) {
     const question = doc.addPage([595,842]); questionPages.push(question);
-    const results = q.options.map(() => doc.addPage([595,842])); feedbackPages.push(results);visualPages.push(q.visualData?doc.addPage([595,842]):null);
+    answerPages.push(doc.addPage([595,842]));
+    visualPages.push(q.visualData?doc.addPage([595,842]):null);
   }
   for (let qi=0; qi<questions.length; qi++) {
-    const q=questions[qi], page=questionPages[qi], results=feedbackPages[qi];
+    const q=questions[qi], page=questionPages[qi], result=answerPages[qi];
     header(page,`QUESTION ${startNumber+qi+1} / ${totalQuestions}`,blue);
     let y=754,stemSize=12,stemLine=17;
     const minOptionHeight=58;
@@ -374,18 +375,23 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
       page.drawRectangle({x:41,y:bottom,width:512,height:height-6,borderWidth:1,borderColor:rgb(.75,.80,.89),color:rgb(.975,.983,1)});
       page.drawText(`${letters[oi]}.`,{x:54,y:y-11,size:12,font:bold,color:blue});
       drawWrapped(page,option,79,y-11,460,regular,11,ink,15);
-      goto(doc,page,[41,bottom,553,bottom+height-6],results[oi]);
+      goto(doc,page,[41,bottom,553,bottom+height-6],result);
       y=bottom-14;
     });
     if(visualPages[qi]){page.drawText('View source figure  >',{x:42,y:42,size:10,font:bold,color:blue});goto(doc,page,[40,36,188,56],visualPages[qi]);}
-    else page.drawText('Choose one option to check your answer.',{x:42,y:42,size:10,font:regular,color:grey});
+    else page.drawText('Choose an option to view the answer.',{x:42,y:42,size:10,font:regular,color:grey});
     if(visualPages[qi]){const figure=visualPages[qi],image=await doc.embedJpg(q.visualData),ratio=Math.min(510/image.width,670/image.height);header(figure,`SOURCE FIGURE · QUESTION ${startNumber+qi+1}`,blue);figure.drawImage(image,{x:42,y:750-image.height*ratio,width:image.width*ratio,height:image.height*ratio});figure.drawText('Back to question',{x:42,y:42,size:11,font:bold,color:blue});goto(doc,figure,[40,35,210,60],page);}
-    results.forEach((result,oi) => {
-      const hasAnswer=Number.isInteger(q.answer),correct=hasAnswer&&oi===q.answer,accent=hasAnswer?(correct?green:red):amber;
-      header(result,hasAnswer?(correct?'CORRECT ANSWER':'INCORRECT ANSWER'):'NO ANSWER FOR THIS QUESTION',accent);
+    {
+      const hasAnswer=Number.isInteger(q.answer);
+      header(result,hasAnswer?'ANSWER & EXPLANATION':'NO ANSWER FOR THIS QUESTION',hasAnswer?green:amber);
       let ry=750;
-      ry=drawWrapped(result,`Your choice: ${letters[oi]}. ${q.options[oi]}`,42,ry,510,bold,12,accent,18)-24;
-      ry=drawWrapped(result,hasAnswer?`Correct answer: ${letters[q.answer]}. ${q.options[q.answer]}`:'No answer for this question',42,ry,510,bold,12,hasAnswer?green:amber,18)-32;
+      if(hasAnswer){
+        for(let oi=0;oi<q.options.length;oi++){
+          const correct=oi===q.answer;
+          ry=drawWrapped(result,`${letters[oi]}. ${q.options[oi]}${correct?'  (Correct answer)':''}`,42,ry,510,correct?bold:regular,11,correct?green:red,15)-8;
+        }
+        ry-=18;
+      }else ry=drawWrapped(result,'No answer for this question',42,ry,510,bold,12,amber,18)-32;
       result.drawText('EXPLANATION',{x:42,y:ry,size:12,font:bold,color:ink});
       const explanation=q.explanation?.trim()||'No explanation provided.';
       const lines=wrappedLines(explanation,510,regular,11),start=ry-27;
@@ -407,7 +413,7 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
       }
       result.drawText('Try this question again',{x:42,y:69,size:11,font:bold,color:blue}); goto(doc,result,[40,63,230,84],page);
       if (questionPages[qi+1]) {result.drawText('Next question  >',{x:390,y:69,size:11,font:bold,color:blue});goto(doc,result,[382,63,555,84],questionPages[qi+1]);}
-    });
+    }
     if(qi%5===0||qi===questions.length-1){onProgress(qi+1,questions.length);await new Promise(resolve=>setTimeout(resolve,0));}
   }
   // A 100% PDF viewer now displays the old page's content at 150% size.
