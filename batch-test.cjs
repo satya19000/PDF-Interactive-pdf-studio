@@ -36,7 +36,28 @@ w.eval(app+';globalThis.__getOutputs=()=>outputs;');
  assert.equal(pastest.length,1);assert.equal(pastest[0].answer,1);assert.deepEqual(pastest[0].options,['First','Second']);
  const long=quiz.parseStructured('Q-2\nA long discussion?\nA. Yes\nB. No\nANSWER: A\nEXPLANATION:\n'+('Detailed discussion with supporting points. '.repeat(130)));
  const longPdf=await quiz.buildQuizPdf(long,'Discussion');assert(longPdf.pages>3);
- w.eval("extractQuiz=async item=>item.file.name.startsWith('empty')?[]:globalThis.__quizModule.parseStructured(await item.file.text())");
+ w.eval("extractQuiz=async item=>{if(item.file.name.startsWith('empty'))return [];const parsed=globalThis.__quizModule.parseStructured(await item.file.text());item.expectedMCQs=item.file.name.startsWith('mismatch')?parsed.length+1:parsed.length;return parsed}");
+ const folderA=new File(['Q1. A?\nA. Yes\nB. No'],'same.txt'),folderB=new File(['Q1. B?\nA. Yes\nB. No'],'same.txt');
+ Object.defineProperty(folderA,'webkitRelativePath',{value:'Subject/A/same.txt'});
+ Object.defineProperty(folderB,'webkitRelativePath',{value:'Subject/B/same.txt'});
+ w.add([folderA,folderB]);
+ assert.equal(w.document.querySelectorAll('#queue .file').length,2);
+ assert(w.document.getElementById('queue').textContent.includes('Subject/B/same.txt'));
+ w.document.getElementById('clear').click();
+ w.add([new File(['Q1. Separate first?\nA. Yes\nB. No'],'first-separate.txt'),new File(['Q1. Separate second?\nA. No\nB. Yes'],'second-separate.txt')]);
+ await w.convert();
+ assert.equal(w.document.querySelectorAll('#queue .download').length,2);
+ assert.equal(w.__getOutputs().length,2);
+ assert.equal(w.__getOutputs()[0].mcqs,1);assert.equal(w.__getOutputs()[1].mcqs,1);
+ assert.equal(w.__getOutputs()[0].name,'first-separate-quiz.pdf');
+ assert.equal(w.__getOutputs()[1].name,'second-separate-quiz.pdf');
+ w.document.getElementById('clear').click();
+ w.add([new File(['Q1. Incomplete?\nA. Yes\nB. No'],'mismatch.txt'),new File(['Q1. Safe?\nA. Yes\nB. No'],'safe.txt')]);
+ await w.convert();
+ assert.equal(w.__getOutputs().length,1);
+ assert(w.document.getElementById('queue').textContent.includes('Incomplete PDF blocked'));
+ w.document.getElementById('clear').click();
+ w.document.getElementById('combineMode').checked=true;
  w.add([
   new File(['No questions here'],'empty.pdf'),
   new File(['Q1. First MCQ?\nA. Yes\nB. No\nAnswer: A'],'first.txt'),
