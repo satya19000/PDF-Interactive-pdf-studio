@@ -96,8 +96,8 @@ export async function captureVisualFigures(pdfjs,questions){
 }
 
 // Detect the five shaded answer rows in image-only question banks.
-export function shadedOptionRows(imageData,width,height) {
-  const x=Math.floor(width*.93),rows=[];
+export function shadedOptionRows(imageData,width,height,xFraction=.93) {
+  const x=Math.floor(width*xFraction),rows=[];
   const at=y=>{
     const offset=(y*width+x)*4,r=imageData[offset],g=imageData[offset+1],b=imageData[offset+2];
     if(g>r+18&&g>b+10&&g>100)return 'green';
@@ -116,6 +116,63 @@ export function shadedOptionRows(imageData,width,height) {
     if(group.every((row,j)=>!j||row.top-group[j-1].bottom<=Math.max(12,height0*.35)))return {group,rows};
   }
   return {group:null,rows};
+}
+
+// PASTEST exports put each unmarked question on an odd page and its marked
+// answer on the following page. Preserve both images when OCR misses numbers,
+// tables, or symbols instead of silently dropping the question.
+export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
+  if(pdfjs.numPages%2)throw new Error('This paired question bank has an unmatched page. Check the source PDF.');
+  const questions=[];
+  for(let number=1;number<=pdfjs.numPages;number+=2){
+    const capture=async pageNumber=>{
+      const page=await pdfjs.getPage(pageNumber),base=page.getViewport({scale:1});
+      const scale=Math.min(2.2,2400/Math.max(base.width,base.height)),viewport=page.getViewport({scale});
+      const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+      const crop=document.createElement('canvas');
+      try{
+        await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+        const data=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,canvas.width,canvas.height).data;
+        const box=imageQuizContentBounds(data,canvas.width,canvas.height);
+        crop.width=box.width;crop.height=box.height;
+        crop.getContext('2d').drawImage(canvas,box.x,box.y,box.width,box.height,0,0,box.width,box.height);
+        const pixels=crop.getContext('2d',{willReadFrequently:true}).getImageData(0,0,crop.width,crop.height).data;
+        const candidates=[.93,.85,.75,.65,.55,.45,.35,.25,.2,.15,.1].map(x=>shadedOptionRows(pixels,crop.width,crop.height,x));
+        const found=candidates.find(c=>c.group?.some(row=>row.kind==='green'))||candidates.find(c=>c.group)||candidates[0];
+        return {crop,found};
+      }finally{canvas.width=0;canvas.height=0;page.cleanup?.();}
+    };
+    const question=await capture(number),answer=await capture(number+1);
+    try{
+      const qImage=question.crop.toDataURL('image/jpeg',.91);
+      const {group,rows}=answer.found;
+      const correct=group?.findIndex(row=>row.kind==='green')??-1;
+      const greenRows=rows.filter(row=>row.kind==='green');
+      const repeat=greenRows[1];
+      const from=greenRows[0]?.bottom||group?.[4]?.bottom||0;
+      const after=repeat?.bottom||from;
+      const next=rows.find(row=>row.kind==='gray'&&row.top>after+10);
+      const top=repeat&&from?Math.min(answer.crop.height-1,Math.max(from+2,repeat.top-60)):0;
+      const bottom=next&&next.top>top+80?next.top:answer.crop.height;
+      const answerCrop=document.createElement('canvas');
+      answerCrop.width=answer.crop.width;answerCrop.height=Math.max(1,bottom-top);
+      answerCrop.getContext('2d').drawImage(answer.crop,0,top,answer.crop.width,answerCrop.height,0,0,answerCrop.width,answerCrop.height);
+      const answerPixels=answerCrop.getContext('2d',{willReadFrequently:true}).getImageData(0,0,answerCrop.width,answerCrop.height).data;
+      const content=imageQuizContentBounds(answerPixels,answerCrop.width,answerCrop.height);
+      const trimmed=document.createElement('canvas');trimmed.width=content.width;trimmed.height=content.height;
+      trimmed.getContext('2d').drawImage(answerCrop,content.x,content.y,content.width,content.height,0,0,content.width,content.height);
+      questions.push({id:`paired-${number}`,stem:`Source question ${(number+1)/2}`,options:['A','B','C','D','E'],
+        answer:correct>=0?correct:null,explanation:'',sourcePage:number,verified:correct>=0,
+        imageQuestionData:qImage,imageQuestionWidth:question.crop.width,imageQuestionHeight:question.crop.height,
+        imageQuestionRows:question.found.group?.map(row=>({top:row.top,bottom:row.bottom}))||[],
+        imageAnswerData:trimmed.toDataURL('image/jpeg',.91)});
+      answerCrop.width=0;answerCrop.height=0;trimmed.width=0;trimmed.height=0;
+    }finally{question.crop.width=0;question.crop.height=0;answer.crop.width=0;answer.crop.height=0;}
+    onProgress(questions.length,pdfjs.numPages/2);
+    if(number%10===1)await new Promise(resolve=>setTimeout(resolve,0));
+  }
+  if(questions.length!==pdfjs.numPages/2)throw new Error('Question count mismatch. No incomplete quiz was exported.');
+  return questions;
 }
 
 export function imageQuizContentBounds(imageData,width,height) {
@@ -364,6 +421,28 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
   for (let qi=0; qi<questions.length; qi++) {
     const q=questions[qi], page=questionPages[qi], result=answerPages[qi];
     header(page,`QUESTION ${startNumber+qi+1} / ${totalQuestions}`,blue);
+    if(q.imageQuestionData){
+      const picture=await doc.embedJpg(q.imageQuestionData);
+      const ratio=Math.min(510/picture.width,655/picture.height);
+      const width=picture.width*ratio,height=picture.height*ratio;
+      const left=42,top=750,bottom=top-height;
+      page.drawImage(picture,{x:left,y:bottom,width,height});
+      if(q.imageQuestionRows.length===5){
+        for(const row of q.imageQuestionRows){
+          const upper=top-row.top*ratio,lower=top-row.bottom*ratio;
+          goto(doc,page,[left,lower,left+width,upper],result);
+        }
+      }else goto(doc,page,[left,bottom,left+width,top],result);
+      page.drawText('Tap an option to view the answer.',{x:42,y:42,size:10,font:regular,color:grey});
+      header(result,'ANSWER & EXPLANATION',green);
+      const answerImage=await doc.embedJpg(q.imageAnswerData);
+      const answerRatio=Math.min(510/answerImage.width,665/answerImage.height);
+      result.drawImage(answerImage,{x:42,y:750-answerImage.height*answerRatio,width:answerImage.width*answerRatio,height:answerImage.height*answerRatio});
+      result.drawText('Try this question again',{x:42,y:69,size:11,font:bold,color:blue});goto(doc,result,[40,63,230,84],page);
+      if(questionPages[qi+1]){result.drawText('Next question  >',{x:390,y:69,size:11,font:bold,color:blue});goto(doc,result,[382,63,555,84],questionPages[qi+1]);}
+      if(qi%5===0||qi===questions.length-1){onProgress(qi+1,questions.length);await new Promise(resolve=>setTimeout(resolve,0));}
+      continue;
+    }
     let y=754,stemSize=12,stemLine=17;
     const minOptionHeight=58;
     while(stemSize>9 && y-lineCount(q.stem,regular,stemSize,510)*stemLine-34-q.options.length*minOptionHeight<65){stemSize--;stemLine=stemSize*1.38;}
