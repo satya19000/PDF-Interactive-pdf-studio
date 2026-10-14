@@ -91,7 +91,7 @@ async function readExistingQuiz(file){
  return {doc,questionCount,originalPageCount:doc.getPageCount(),title:doc.getTitle()||stem(file.name)};
 }
 async function extractQuiz(item,report=setProgress){
- const {parseBmj,parseStructured,parseVisualOptionBank,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,captureVisualFigures,recognizeScannedPage,extractPairedImageBank}=await import('./quiz.mjs');
+ const {parseBmj,parseStructured,parseVisualOptionBank,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,captureVisualFigures,recognizeScannedPage,extractPairedImageBank}=await import('./quiz.mjs?v=20261014b');
  if(ext(item.file.name)==='pdf'){
   const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
   const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer()),disableFontFace:true}).promise;
@@ -148,23 +148,31 @@ async function convert(){
  const candidates=queue.filter(i=>!i.unsupported),quiz=$('quizMode').checked;
  const opts={index:$('index').checked,notes:$('notes').checked,checks:$('checks').checked,mcqs:$('mcqs').checked};
  if(quiz&&!$('combineMode').checked){
-  const {buildQuizPdf}=await import('./quiz.mjs');let done=0,skipped=0,failed=0;
+  const {buildQuizPdf}=await import('./quiz.mjs?v=20261014b');let done=0,skipped=0,failed=0;
   try{
    for(const item of queue){
     if(item.unsupported){item.error=null;item.state='Skipped · unsupported format';skipped++;done++;render();continue;}
     item.error=null;item.expectedMCQs=null;item.state='Analyzing…';render();
     try{
-     if(await readExistingQuiz(item.file))throw new Error('Already an interactive quiz. Use combined mode with new source files to continue it.');
-     item.questions=await extractQuiz(item,(value,message)=>setProgress((done+value/100)/queue.length*90,`${item.file.name}: ${message}`));
+     const previous=await readExistingQuiz(item.file);
+     if(previous){
+      const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');
+      const {extractLegacyQuizPdf}=await import('./quiz.mjs?v=20261014b');
+      GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
+      const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer())}).promise;
+      try{item.questions=await extractLegacyQuizPdf(pdfjs,(current,total)=>setProgress((done+current/total*.75)/queue.length*90,`${item.file.name}: restoring ${current}/${total} questions`));}
+      finally{await pdfjs.destroy();}
+      item.expectedMCQs=previous.questionCount;
+     }else item.questions=await extractQuiz(item,(value,message)=>setProgress((done+value/100)/queue.length*90,`${item.file.name}: ${message}`));
      if(!item.questions.length){item.state=`Skipped · ${item.skipReason||'no MCQs found'}`;skipped++;}
      else if(!Number.isInteger(item.expectedMCQs)||item.expectedMCQs<1)throw new Error('Source MCQ count cannot be verified for this layout. No incomplete PDF was exported.');
      else if(item.questions.length!==item.expectedMCQs)throw new Error(`Source has ${item.expectedMCQs} MCQs, but ${item.questions.length} were extracted. Incomplete PDF blocked.`);
      else {
       item.state=`Building ${item.expectedMCQs} questions…`;render();
-      const title=$('title').value.trim()||stem(item.file.name);
+      const title=$('title').value.trim()||previous?.title||stem(item.file.name);
       const result=await buildQuizPdf(item.questions,title,(current,total)=>setProgress((done+.75+current/total*.2)/queue.length*100,`${item.file.name}: building ${current}/${total}`));
       if(result.mcqs!==item.expectedMCQs)throw new Error('Output MCQ count mismatch. Incomplete PDF blocked.');
-      const blob=new Blob([result.bytes],{type:'application/pdf'});let name=stem(item.file.name)+'-quiz.pdf';
+      const blob=new Blob([result.bytes],{type:'application/pdf'});let name=previous?stem(item.file.name).replace(/-quiz$/i,'')+'-updated-quiz.pdf':stem(item.file.name)+'-quiz.pdf';
       if(outputs.some(o=>o.name===name))name=stem(item.file.name)+`-${done+1}-quiz.pdf`;
       outputs.push({...result,quiz:true,sourceItem:item,blob,url:URL.createObjectURL(blob),name,bytes:undefined});
       item.state=`Ready · ${result.mcqs}/${item.expectedMCQs} MCQs · ${result.pages} pages`;
@@ -177,7 +185,7 @@ async function convert(){
   return;
  }
  if(quiz){
-  const allQuestions=[],included=[],skipped=[],failed=[];let currentItem=null,existing=null;
+  const allQuestions=[],included=[],skipped=[],failed=[];let currentItem=null,existing=null,baseTitle='',sawBase=false;
   try{
    if(!candidates.length)throw new Error('Add a question bank to begin.');
    for(const item of queue.filter(i=>i.unsupported)){item.error=null;item.state='Skipped · unsupported format';skipped.push(item);}
@@ -187,9 +195,20 @@ async function convert(){
      await new Promise(resolve=>setTimeout(resolve,0));
      const previous=await readExistingQuiz(item.file);
      if(previous){
-      if(existing)throw new Error('Add only one existing quiz PDF as the continuation base.');
-      existing=previous;item.state=`Base quiz · ${previous.questionCount} questions`;render();
-      setProgress(Math.round((i+1)/candidates.length*75),`Existing quiz loaded: ${previous.questionCount} questions. Reading new files…`);
+      if(sawBase)throw new Error('Add only one existing quiz PDF as the continuation base.');
+      sawBase=true;baseTitle=previous.title;
+      if(previous.originalPageCount===previous.questionCount*6){
+       const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');
+       const {extractLegacyQuizPdf}=await import('./quiz.mjs?v=20261014b');
+       GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
+       const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer())}).promise;
+       try{item.questions=await extractLegacyQuizPdf(pdfjs,(current,total)=>setProgress(Math.round((i+current/total)/candidates.length*75),`${item.file.name}: restoring old quiz ${current}/${total}`));}
+       finally{await pdfjs.destroy();}
+       if(item.questions.length!==previous.questionCount)throw new Error('Old quiz count mismatch. Incomplete PDF blocked.');
+       item.expectedMCQs=previous.questionCount;allQuestions.push(...item.questions);included.push(item);
+       item.state=`Restored old quiz · ${previous.questionCount} questions`;
+      }else{existing=previous;item.state=`Base quiz · ${previous.questionCount} questions`;}
+      render();setProgress(Math.round((i+1)/candidates.length*75),`Existing quiz loaded: ${previous.questionCount} questions. Reading new files…`);
       continue;
      }
      if(!item.questions?.length)item.questions=await extractQuiz(item,(value,message)=>{
@@ -204,8 +223,8 @@ async function convert(){
     setProgress(Math.round((i+1)/candidates.length*75),`Checked ${i+1} of ${candidates.length} files · ${allQuestions.length} questions found`);render();
    }
    if(!allQuestions.length){setProgress(100,`No new recognizable MCQs found. ${skipped.length} skipped${failed.length?`, ${failed.length} failed`:''}. See the file list.`);return;}
-   const title=existing?.title||$('title').value.trim()||stem(included[0].file.name);
-   const {buildQuizPdf}=await import('./quiz.mjs');
+   const title=baseTitle||$('title').value.trim()||stem(included[0].file.name);
+   const {buildQuizPdf}=await import('./quiz.mjs?v=20261014b');
    const result=await buildQuizPdf(allQuestions,title,(current,total,phase)=>{
     const percent=Math.round(75+(phase?24:current/total*24));
     setProgress(percent,`${phase||'Building combined quiz'}: ${current} of ${total} questions (${percent}%)`);
