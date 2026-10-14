@@ -261,6 +261,35 @@ export function parseStructured(text) {
   return questions;
 }
 
+// Recover a quiz created by the former five-feedback-page generator. This
+// permits an existing download to be rebuilt with one answer page per MCQ.
+export async function extractLegacyQuizPdf(pdfjs,onProgress=()=>{}) {
+  const lines=async number=>(await (await pdfjs.getPage(number)).getTextContent()).items.map(i=>clean(i.str)).filter(Boolean);
+  const first=await lines(1),header=first.find(line=>/^QUESTION\s+1\s*\/\s*\d+$/i.test(line));
+  const total=Number(/\/\s*(\d+)/.exec(header||'')?.[1]);
+  if(!Number.isSafeInteger(total)||total<1||pdfjs.numPages!==total*6)
+    throw new Error('This existing quiz is not the five-answer-page layout. Use its original source file to create a new PDF.');
+  const questions=[];
+  for(let index=0;index<total;index++){
+    const question=await lines(index*6+1),feedback=await lines(index*6+2);
+    const head=question.findIndex(line=>line===`QUESTION ${index+1} / ${total}`);
+    const markers=question.map((line,i)=>/^[A-E]\.$/.test(line)?i:-1).filter(i=>i>=0);
+    if(head<0||markers.length!==5||markers.some((i,option)=>question[i]!==`${letters[option]}.`))
+      throw new Error(`Question ${index+1}: cannot verify all five source choices. No incomplete PDF exported.`);
+    const stem=clean(question.slice(head+1,markers[0]).join(' '));
+    const options=markers.map((start,i)=>clean(question.slice(start+1,markers[i+1]||question.findIndex((line,j)=>j>start&&/^Choose one option/i.test(line))).join(' ')));
+    const answerLine=feedback.find(line=>/^Correct answer:\s*[A-E]\./i.test(line));
+    const answer=answerLine?letters.indexOf(/^Correct answer:\s*([A-E])\./i.exec(answerLine)[1].toUpperCase()):null;
+    const exStart=feedback.findIndex(line=>line==='EXPLANATION');
+    const exEnd=feedback.findIndex((line,i)=>i>exStart&&/^Try this question again$/i.test(line));
+    if(!stem||options.some(option=>!option)||exStart<0||exEnd<0)
+      throw new Error(`Question ${index+1}: cannot verify its text or explanation. No incomplete PDF exported.`);
+    questions.push({id:`legacy-${index+1}`,stem,options,answer,explanation:clean(feedback.slice(exStart+1,exEnd).join(' ')),sourcePage:index*6+1,verified:Number.isInteger(answer)});
+    if(index%10===0||index===total-1){onProgress(index+1,total);await new Promise(resolve=>setTimeout(resolve,0));}
+  }
+  return questions;
+}
+
 export function parseBmj(pages) {
   const groups = [], seen = new Set();
   for (let page = 0; page < pages.length; page++) {
