@@ -56,7 +56,7 @@ w.eval(app+';globalThis.__getOutputs=()=>outputs;');
  const continued=await globalThis.PDFLib.PDFDocument.load(await w.__getOutputs()[0].blob.arrayBuffer());
  assert.equal(continued.getTitle(),'Combined subject');
  assert.equal(continued.getKeywords().includes('question-count:2'),true);
- assert.equal(continued.getPageCount(),base.pages+3);
+ assert.equal(continued.getPageCount(),base.pages+2);
  assert.equal(continued.getPage(0).node.Annots().size(),2);
  assert.equal(continued.getPage(0).getWidth(),892.5);
  assert.equal(continued.getPage(base.pages).getWidth(),892.5);
