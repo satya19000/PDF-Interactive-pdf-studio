@@ -9,15 +9,15 @@ function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className
 function render(){
  $('count').textContent=queue.length+' files';$('queue').replaceChildren();
  if(!queue.length)$('queue').append(el('div','empty','Your conversion queue will appear here.'));
- for(const item of queue){const row=el('div','file');row.append(el('div','fileicon',ext(item.file.name).toUpperCase()));const info=el('div','fileinfo');info.append(el('div','filename',item.file.name),el('div','filemeta'+(item.error?' error':''),item.error||`${human(item.file.size)} · ${item.state||'Ready'}`));const remove=el('button','textbtn','×');remove.setAttribute('aria-label','Remove '+item.file.name);remove.disabled=busy;remove.onclick=()=>{queue=queue.filter(i=>i!==item);render()};row.append(info,remove);$('queue').append(row)}
+ for(const item of queue){const row=el('div','file');row.append(el('div','fileicon',ext(item.file.name).toUpperCase()));const info=el('div','fileinfo');info.append(el('div','filename',item.file.webkitRelativePath||item.file.name),el('div','filemeta'+(item.error?' error':''),item.error||`${human(item.file.size)} · ${item.state||'Ready'}`));const result=outputs.find(o=>o.sourceItem===item);if(result){const download=el('a','download','Download PDF');download.href=result.url;download.download=result.name;row.append(info,download)}else row.append(info);const remove=el('button','textbtn','×');remove.setAttribute('aria-label','Remove '+item.file.name);remove.disabled=busy;remove.onclick=()=>{queue=queue.filter(i=>i!==item);render()};row.append(remove);$('queue').append(row)}
  const quiz=$('quizMode').checked;$('legacyOptions').hidden=quiz;$('modeNotice').hidden=quiz;
  $('convert').disabled=busy||!queue.some(i=>!i.unsupported);
- $('convert').firstChild.textContent=quiz?'Create interactive quiz PDF ':'Keep original pages with notes ';
- $('clear').disabled=busy||!queue.length;$('files').disabled=busy;$('demo').disabled=busy;
- for(const id of ['title','quizMode','index','mcqs','notes','checks','size'])$(id).disabled=busy;
+ $('convert').firstChild.textContent=quiz?($('combineMode').checked?'Create one combined quiz PDF ':'Create separate quiz PDFs '):'Keep original pages with notes ';
+ $('clear').disabled=busy||!queue.length;$('files').disabled=busy;$('folders').disabled=busy;$('demo').disabled=busy;
+ for(const id of ['title','quizMode','combineMode','index','mcqs','notes','checks','size'])$(id).disabled=busy;
 }
-function add(files){if(busy)return;let added=0;for(const file of files){if(queue.some(i=>i.file.name===file.name&&i.file.size===file.size&&i.file.lastModified===file.lastModified))continue;const bad=!allowed.has(ext(file.name));queue.push({file,unsupported:bad,error:bad?'Unsupported format. Export to PDF in the original app first.':null});added++}render();$('status').textContent=added?`${added} file(s) added. Choose your options and convert.`:'These files are already in your queue.';}
-$('files').onchange=e=>{add(e.target.files);e.target.value=''};$('drop').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('files').click()}};for(const type of ['dragenter','dragover'])$('drop').addEventListener(type,e=>{e.preventDefault();$('drop').classList.add('drag')});for(const type of ['dragleave','drop'])$('drop').addEventListener(type,e=>{e.preventDefault();$('drop').classList.remove('drag')});$('drop').addEventListener('drop',e=>add(e.dataTransfer.files));$('clear').onclick=()=>{queue=[];render();$('status').textContent='Add a file to get started.'};$('demo').onclick=()=>add([new File(['Q1. What is the first-line lifestyle advice for impaired fasting glucose?\nA. Antibiotics\nB. Diet and exercise\nC. Anticoagulation\nD. Surgery\nAnswer: B\nExplanation: Diet and exercise are the initial measures.'],'Sample question bank.txt',{type:'text/plain'})]);$('quizMode').onchange=()=>{render()};
+function add(files){if(busy)return;let added=0;for(const file of files){if(queue.some(i=>(i.file.webkitRelativePath||i.file.name)===(file.webkitRelativePath||file.name)&&i.file.size===file.size&&i.file.lastModified===file.lastModified))continue;const bad=!allowed.has(ext(file.name));queue.push({file,unsupported:bad,error:bad?'Unsupported format. Export to PDF in the original app first.':null});added++}render();$('status').textContent=added?`${added} file(s) added. Choose your options and convert.`:'These files are already in your queue.';}
+$('files').onchange=e=>{add(e.target.files);e.target.value=''};$('folders').onchange=e=>{add(e.target.files);e.target.value=''};$('drop').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('files').click()}};for(const type of ['dragenter','dragover'])$('drop').addEventListener(type,e=>{e.preventDefault();$('drop').classList.add('drag')});for(const type of ['dragleave','drop'])$('drop').addEventListener(type,e=>{e.preventDefault();$('drop').classList.remove('drag')});$('drop').addEventListener('drop',e=>add(e.dataTransfer.files));$('clear').onclick=()=>{queue=[];render();$('status').textContent='Add a file to get started.'};$('demo').onclick=()=>add([new File(['Q1. What is the first-line lifestyle advice for impaired fasting glucose?\nA. Antibiotics\nB. Diet and exercise\nC. Anticoagulation\nD. Surgery\nAnswer: B\nExplanation: Diet and exercise are the initial measures.'],'Sample question bank.txt',{type:'text/plain'})]);$('quizMode').onchange=render;$('combineMode').onchange=render;
 async function rasterImage(data){const url=data instanceof Blob?URL.createObjectURL(data):data;try{const im=new Image();im.src=url;await im.decode();const scale=Math.min(1,2400/Math.max(im.naturalWidth,im.naturalHeight));const c=document.createElement('canvas');c.width=Math.max(1,im.naturalWidth*scale);c.height=Math.max(1,im.naturalHeight*scale);const ctx=c.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,c.width,c.height);ctx.drawImage(im,0,0,c.width,c.height);return c.toDataURL('image/jpeg',.92)}finally{if(data instanceof Blob)URL.revokeObjectURL(url)}}
 async function contentBlocks(file){const type=ext(file.name),buf=await file.arrayBuffer();if(['png','jpg','jpeg','webp','bmp','gif'].includes(type))return [{image:await rasterImage(file)}];if(type==='docx'){const result=await mammoth.convertToHtml({arrayBuffer:buf});const dom=new DOMParser().parseFromString(result.value,'text/html');const blocks=[];for(const node of dom.body.children){if(node.textContent.trim())blocks.push({text:node.textContent});for(const im of node.querySelectorAll('img'))if(im.src.startsWith('data:image/')){try{blocks.push({image:await rasterImage(im.src)})}catch{blocks.push({text:'[An embedded image could not be converted.]'})}}}return blocks;}
 if(type==='pptx'){const zip=await JSZip.loadAsync(buf);const names=Object.keys(zip.files).filter(n=>/^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a,b)=>parseInt(a.match(/slide(\d+)/)[1])-parseInt(b.match(/slide(\d+)/)[1]));const blocks=[];for(let i=0;i<names.length;i++){const name=names[i];const dom=new DOMParser().parseFromString(await zip.file(name).async('text'),'application/xml');const texts=Array.from(dom.getElementsByTagNameNS('*','t')).map(n=>n.textContent);blocks.push({text:`Slide ${i+1}\n\n${texts.join('\n')}`,newPage:true});const relName=name.replace('/slides/','/slides/_rels/')+'.rels';const relFile=zip.file(relName);if(relFile){const rel=new DOMParser().parseFromString(await relFile.async('text'),'application/xml');const targets=new Map(Array.from(rel.getElementsByTagName('Relationship')).filter(n=>n.getAttribute('TargetMode')!=='External').map(n=>[n.getAttribute('Id'),n.getAttribute('Target')]));for(const blip of Array.from(dom.getElementsByTagNameNS('*','blip'))){const rid=blip.getAttribute('r:embed');const target=targets.get(rid);if(!target)continue;const parts=('ppt/slides/'+target).split('/'),clean=[];for(const p of parts){if(p==='..')clean.pop();else if(p!=='.')clean.push(p)}const asset=zip.file(clean.join('/'));if(asset){try{blocks.push({image:await rasterImage(new Blob([await asset.async('uint8array')]))})}catch{blocks.push({text:'[Unsupported slide graphic. Export the presentation to PDF for full fidelity.]'})}}}}}return blocks;}
@@ -33,6 +33,7 @@ if(opts.notes||opts.checks){const count=opts.checks?Math.ceil(n/18):1;for(let k=
 for(let i=0;i<indices.length;i++){const p=indices[i];if(i>0)link(doc,p,'Previous index',48,62,indices[i-1],regular);if(i+1<indices.length)link(doc,p,'Next index',220,62,indices[i+1],regular);if(worksheetPages.length)link(doc,p,'Open worksheet',400,62,worksheetPages[0],regular)}doc.setTitle(title);doc.setCreator('PDF Interactive Studio');return {bytes:await doc.save(),pages:doc.getPageCount(),sourcePages:n,mcqs:opts.mcqCount||0};}
 function showOutputs(){ $('results').hidden=!outputs.length;$('zip').hidden=outputs.length<=1;$('outputs').replaceChildren();for(const o of outputs){const row=el('div','output');const info=el('div','filename',o.name);info.append(el('small','',o.quiz?`${o.mcqs} interactive questions · ${o.pages} total pages · ${human(o.blob.size)}`:`Original layout · ${o.sourcePages} source pages · ${o.mcqs} ungraded choice markers · ${o.pages} total pages · ${human(o.blob.size)}`));const a=el('a','download','Download PDF');a.href=o.url;a.download=o.name;row.append(el('div','fileicon','PDF'),info,a);$('outputs').append(row)}}
 function setProgress(value,message){$('progress').hidden=false;$('progress').value=Math.max(0,Math.min(100,value));$('progress').setAttribute('aria-label',message);$('status').textContent=message;}
+function explicitQuestionCount(text){return (String(text).match(/^\s*(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])(?:\s+|$)/gim)||[]).length;}
 let ocrScriptPromise;
 function loadOcrEngine(){
  if(!ocrScriptPromise)ocrScriptPromise=new Promise((resolve,reject)=>{
@@ -110,17 +111,18 @@ async function extractQuiz(item,report=setProgress){
      item.state=`Preserving ${done}/${total} source questions`;
      report(50+done/total*35,`${item.file.name}: preserved ${done} of ${total} question/answer pairs`);render();
     });
-    if(all.length!==pdfjs.numPages/2)throw new Error('Source and output MCQ counts differ. Incomplete PDF blocked.');
+    item.expectedMCQs=pdfjs.numPages/2;
+    if(all.length!==item.expectedMCQs)throw new Error('Source and output MCQ counts differ. Incomplete PDF blocked.');
     return all;
    }
-   const bmj=parseBmj(pages);if(bmj.length){await inferBmjAnswerColors(pdfjs,bmj,(done,total)=>{item.state=`Checking answer key ${done}/${total}`;report(50+done/total*25,`${item.file.name}: checking answers ${done} of ${total} (${Math.round(50+done/total*25)}%)`);render()});item.state='Preserving question figures…';report(75,`${item.file.name}: preserving question figures (75%)`);render();await captureBmjFigures(pdfjs,bmj,(done,total)=>report(75+done/total*5,`${item.file.name}: preserving figure ${done} of ${total} (${Math.round(75+done/total*5)}%)`));return bmj;}
+   const bmj=parseBmj(pages);if(bmj.length){item.expectedMCQs=new Set(pages.flatMap(items=>items.map(i=>/Question\s+(\d+)\s+of\s+(\d+)/i.exec(i.str||'')).filter(Boolean).map(m=>`${m[2]}-${m[1]}`))).size;await inferBmjAnswerColors(pdfjs,bmj,(done,total)=>{item.state=`Checking answer key ${done}/${total}`;report(50+done/total*25,`${item.file.name}: checking answers ${done} of ${total} (${Math.round(50+done/total*25)}%)`);render()});item.state='Preserving question figures…';report(75,`${item.file.name}: preserving question figures (75%)`);render();await captureBmjFigures(pdfjs,bmj,(done,total)=>report(75+done/total*5,`${item.file.name}: preserving figure ${done} of ${total} (${Math.round(75+done/total*5)}%)`));return bmj;}
    const visual=parseVisualOptionBank(pages);
    if(visual.length){item.state=`Found ${visual.length} questions`;report(55,`${item.file.name}: ${visual.length} questions found; preserving source tables`);render();await captureVisualFigures(pdfjs,visual);return visual;}
    const pageTexts=pages.map(items=>textLinesFromItems(items).join('\n'));
    let questions=parseStructured(pageTexts.join('\n'));
    // Image-only banks often include selectable headers and page numbers (~80 characters).
    const scanned=pageTexts.map((text,index)=>text.trim().length<180?index+1:null).filter(Boolean);
-   if(!scanned.length&&questions.length)return questions;
+   if(!scanned.length&&questions.length){item.expectedMCQs=explicitQuestionCount(pageTexts.join('\n'));return questions;}
    if(!scanned.length){item.skipReason='No recognized MCQs in selectable text';return [];}
    item.state=`OCR: 0/${scanned.length} pages`;render();
    const {recognized,imageQuestions}=await ocrPdfPages(pdfjs,scanned,(fraction,message)=>{
@@ -137,13 +139,43 @@ async function extractQuiz(item,report=setProgress){
   await loadOcrEngine();const root=new URL('./vendor/',location.href).href;
   let worker;try{report(10,`${item.file.name}: loading OCR model`);worker=await Tesseract.createWorker('eng',1,{workerPath:root+'worker.min.js',corePath:root+'ocr-core',langPath:root+'ocr-lang',workerBlobURL:false});const {data}=await worker.recognize(await rasterImage(item.file));report(80,`${item.file.name}: OCR complete`);return parseStructured(data.text||'');}finally{await worker?.terminate();}
  }
- const blocks=await contentBlocks(item.file);
- return parseStructured(blocks.map(b=>b.text||'').join('\n'));
+ const blocks=await contentBlocks(item.file),text=blocks.map(b=>b.text||'').join('\n');
+ item.expectedMCQs=explicitQuestionCount(text);
+ return parseStructured(text);
 }
 async function convert(){
  if(busy)return;busy=true;outputs.forEach(o=>URL.revokeObjectURL(o.url));outputs=[];showOutputs();render();
  const candidates=queue.filter(i=>!i.unsupported),quiz=$('quizMode').checked;
  const opts={index:$('index').checked,notes:$('notes').checked,checks:$('checks').checked,mcqs:$('mcqs').checked};
+ if(quiz&&!$('combineMode').checked){
+  const {buildQuizPdf}=await import('./quiz.mjs');let done=0,skipped=0,failed=0;
+  try{
+   for(const item of queue){
+    if(item.unsupported){item.error=null;item.state='Skipped · unsupported format';skipped++;done++;render();continue;}
+    item.error=null;item.expectedMCQs=null;item.state='Analyzing…';render();
+    try{
+     if(await readExistingQuiz(item.file))throw new Error('Already an interactive quiz. Use combined mode with new source files to continue it.');
+     item.questions=await extractQuiz(item,(value,message)=>setProgress((done+value/100)/queue.length*90,`${item.file.name}: ${message}`));
+     if(!item.questions.length){item.state=`Skipped · ${item.skipReason||'no MCQs found'}`;skipped++;}
+     else if(!Number.isInteger(item.expectedMCQs)||item.expectedMCQs<1)throw new Error('Source MCQ count cannot be verified for this layout. No incomplete PDF was exported.');
+     else if(item.questions.length!==item.expectedMCQs)throw new Error(`Source has ${item.expectedMCQs} MCQs, but ${item.questions.length} were extracted. Incomplete PDF blocked.`);
+     else {
+      item.state=`Building ${item.expectedMCQs} questions…`;render();
+      const title=$('title').value.trim()||stem(item.file.name);
+      const result=await buildQuizPdf(item.questions,title,(current,total)=>setProgress((done+.75+current/total*.2)/queue.length*100,`${item.file.name}: building ${current}/${total}`));
+      if(result.mcqs!==item.expectedMCQs)throw new Error('Output MCQ count mismatch. Incomplete PDF blocked.');
+      const blob=new Blob([result.bytes],{type:'application/pdf'});let name=stem(item.file.name)+'-quiz.pdf';
+      if(outputs.some(o=>o.name===name))name=stem(item.file.name)+`-${done+1}-quiz.pdf`;
+      outputs.push({...result,quiz:true,sourceItem:item,blob,url:URL.createObjectURL(blob),name,bytes:undefined});
+      item.state=`Ready · ${result.mcqs}/${item.expectedMCQs} MCQs · ${result.pages} pages`;
+     }
+    }catch(e){item.error=e.message||'Could not verify this question bank';failed++;}
+    done++;setProgress(done/queue.length*100,`${done}/${queue.length} files checked · ${outputs.length} ready · ${failed} failed · ${skipped} skipped`);
+    render();showOutputs();await new Promise(resolve=>setTimeout(resolve,0));
+   }
+  }finally{busy=false;render();showOutputs();if(outputs.length)$('results').scrollIntoView?.({behavior:'smooth'});}
+  return;
+ }
  if(quiz){
   const allQuestions=[],included=[],skipped=[],failed=[];let currentItem=null,existing=null;
   try{
@@ -165,6 +197,8 @@ async function convert(){
       setProgress(percent,`${message.replace(/ \(\d+%\)$/,'')} · file ${i+1}/${candidates.length} (${percent}%)`);
      });
      if(!item.questions.length){item.state=`Skipped · ${item.skipReason||'no recognizable MCQs found'}`;skipped.push(item);}
+     else if(!Number.isInteger(item.expectedMCQs)||item.expectedMCQs<1)throw new Error('Source MCQ count cannot be verified. Incomplete PDF blocked for this file.');
+     else if(item.questions.length!==item.expectedMCQs)throw new Error(`Source has ${item.expectedMCQs} MCQs, but ${item.questions.length} were extracted. Incomplete PDF blocked.`);
      else {allQuestions.push(...item.questions);included.push(item);item.state=`Included · ${item.questions.length} questions`;}
     }catch(e){item.error=e.message||'Could not read this file';failed.push(item);}
     setProgress(Math.round((i+1)/candidates.length*75),`Checked ${i+1} of ${candidates.length} files · ${allQuestions.length} questions found`);render();
