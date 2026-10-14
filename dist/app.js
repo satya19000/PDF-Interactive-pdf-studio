@@ -90,7 +90,7 @@ async function readExistingQuiz(file){
  return {doc,questionCount,originalPageCount:doc.getPageCount(),title:doc.getTitle()||stem(file.name)};
 }
 async function extractQuiz(item,report=setProgress){
- const {parseBmj,parseStructured,parseVisualOptionBank,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,captureVisualFigures,recognizeScannedPage}=await import('./quiz.mjs');
+ const {parseBmj,parseStructured,parseVisualOptionBank,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,captureVisualFigures,recognizeScannedPage,extractPairedImageBank}=await import('./quiz.mjs');
  if(ext(item.file.name)==='pdf'){
   const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
   const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer()),disableFontFace:true}).promise;
@@ -99,6 +99,19 @@ async function extractQuiz(item,report=setProgress){
    for(let p=1;p<=pdfjs.numPages;p++){
     pages.push((await (await pdfjs.getPage(p)).getTextContent()).items);
     if(p%10===0||p===pdfjs.numPages){item.state=`Reading ${p}/${pdfjs.numPages} pages`;report(p/pdfjs.numPages*50,`${item.file.name}: reading page ${p} of ${pdfjs.numPages} (${Math.round(p/pdfjs.numPages*50)}%)`);render();await new Promise(r=>setTimeout(r,0));}
+   }
+   const pairedPages=pdfjs.numPages%2===0&&pages.every((items,index)=>{
+    const text=items.map(i=>i.str||'').join(' ');
+    return text.includes('MRCP Part 1 Study Library')&&text.includes(`Page ${index+1} of ${pdfjs.numPages}`);
+   });
+   if(pairedPages){
+    item.state=`Preserving 0/${pdfjs.numPages/2} source questions`;render();
+    const all=await extractPairedImageBank(pdfjs,(done,total)=>{
+     item.state=`Preserving ${done}/${total} source questions`;
+     report(50+done/total*35,`${item.file.name}: preserved ${done} of ${total} question/answer pairs`);render();
+    });
+    if(all.length!==pdfjs.numPages/2)throw new Error('Source and output MCQ counts differ. Incomplete PDF blocked.');
+    return all;
    }
    const bmj=parseBmj(pages);if(bmj.length){await inferBmjAnswerColors(pdfjs,bmj,(done,total)=>{item.state=`Checking answer key ${done}/${total}`;report(50+done/total*25,`${item.file.name}: checking answers ${done} of ${total} (${Math.round(50+done/total*25)}%)`);render()});item.state='Preserving question figures…';report(75,`${item.file.name}: preserving question figures (75%)`);render();await captureBmjFigures(pdfjs,bmj,(done,total)=>report(75+done/total*5,`${item.file.name}: preserving figure ${done} of ${total} (${Math.round(75+done/total*5)}%)`));return bmj;}
    const visual=parseVisualOptionBank(pages);
