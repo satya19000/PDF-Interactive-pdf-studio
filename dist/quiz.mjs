@@ -126,25 +126,52 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
   const questions=[];
   for(let number=1;number<=pdfjs.numPages;number+=2){
     const capture=async pageNumber=>{
-      const page=await pdfjs.getPage(pageNumber),base=page.getViewport({scale:1});
-      const scale=Math.min(2.2,2400/Math.max(base.width,base.height)),viewport=page.getViewport({scale});
-      const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+      const page=await pdfjs.getPage(pageNumber),ops=await page.getOperatorList();
+      // Render a tiny page once so PDF.js resolves its original image objects.
+      // The exported PDF's A4 layout and MRCP ROAD branding are separate
+      // objects; copying a rendered page includes both and blurs the MCQ.
+      const viewport=page.getViewport({scale:.25}),preview=document.createElement('canvas');
+      preview.width=Math.ceil(viewport.width);preview.height=Math.ceil(viewport.height);
       const crop=document.createElement('canvas');
       try{
-        await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
-        const data=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,canvas.width,canvas.height).data;
-        const box=imageQuizContentBounds(data,canvas.width,canvas.height);
-        crop.width=box.width;crop.height=box.height;
-        crop.getContext('2d').drawImage(canvas,box.x,box.y,box.width,box.height,0,0,box.width,box.height);
+        await page.render({canvasContext:preview.getContext('2d'),viewport}).promise;
+        const embedded=[];
+        for(let i=0;i<ops.fnArray.length;i++){
+          const args=ops.argsArray[i];
+          if(!Array.isArray(args)||typeof args[0]!=='string'||!args[0].startsWith('img_')||!Number(args[1])||!Number(args[2]))continue;
+          // Some exported logos are outside the rendered viewport, so their
+          // image objects never resolve. Exclude them using operator metadata.
+          if(args[1]>=1000&&args[2]<=300&&args[1]/args[2]>4)continue;
+          const image=page.objs.has(args[0])?page.objs.get(args[0]):await new Promise(resolve=>page.objs.get(args[0],resolve));
+          if(!image?.data)continue;
+          embedded.push(image);
+        }
+        if(!embedded.length)throw new Error(`Source page ${pageNumber}: question screenshot was not found. No incomplete PDF exported.`);
+        crop.width=Math.max(...embedded.map(image=>image.width));
+        crop.height=embedded.reduce((height,image)=>height+image.height+8,0)-8;
+        const ctx=crop.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,crop.width,crop.height);
+        let top=0;
+        for(const image of embedded){
+          const pixels=new Uint8ClampedArray(image.width*image.height*4);
+          if(image.data.length===pixels.length)pixels.set(image.data);
+          else for(let p=0;p<image.width*image.height;p++){
+            const channels=image.data.length===image.width*image.height?1:3;
+            pixels[p*4]=image.data[p*channels];pixels[p*4+1]=image.data[p*channels+(channels>1?1:0)];
+            pixels[p*4+2]=image.data[p*channels+(channels>1?2:0)];pixels[p*4+3]=255;
+          }
+          const tile=document.createElement('canvas');tile.width=image.width;tile.height=image.height;
+          tile.getContext('2d').putImageData(new ImageData(pixels,image.width,image.height),0,0);
+          ctx.drawImage(tile,0,top);top+=image.height+8;tile.width=tile.height=0;
+        }
         const pixels=crop.getContext('2d',{willReadFrequently:true}).getImageData(0,0,crop.width,crop.height).data;
         const candidates=[.93,.85,.75,.65,.55,.45,.35,.25,.2,.15,.1].map(x=>shadedOptionRows(pixels,crop.width,crop.height,x));
         const found=candidates.find(c=>c.group?.some(row=>row.kind==='green'))||candidates.find(c=>c.group)||candidates[0];
         return {crop,found};
-      }finally{canvas.width=0;canvas.height=0;page.cleanup?.();}
+      }finally{preview.width=preview.height=0;}
     };
     const question=await capture(number),answer=await capture(number+1);
     try{
-      const qImage=question.crop.toDataURL('image/jpeg',.91);
+      const qImage=question.crop.toDataURL('image/png');
       const {group,rows}=answer.found;
       const correct=group?.findIndex(row=>row.kind==='green')??-1;
       const greenRows=rows.filter(row=>row.kind==='green');
@@ -162,11 +189,32 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
       const content=imageQuizContentBounds(answerPixels,answerCrop.width,answerCrop.height);
       const trimmed=document.createElement('canvas');trimmed.width=content.width;trimmed.height=content.height;
       trimmed.getContext('2d').drawImage(answerCrop,content.x,content.y,content.width,content.height,0,0,content.width,content.height);
+      const answerPages=[];
+      const maxHeight=Math.max(1,Math.floor(665*trimmed.width/510));
+      // A small overflow is more readable on one page than on an almost
+      // empty continuation page; split only when fitting would shrink >23%.
+      const pageHeight=trimmed.height<=maxHeight*1.3?trimmed.height:maxHeight;
+      const answerInk=trimmed.getContext('2d',{willReadFrequently:true}).getImageData(0,0,trimmed.width,trimmed.height).data;
+      for(let start=0;start<trimmed.height;){
+        let end=Math.min(trimmed.height,start+pageHeight);
+        if(end<trimmed.height){
+          let best=end,bestInk=Infinity;
+          for(let y=Math.max(start+Math.floor(pageHeight*.76),end-90);y<end;y++){
+            let ink=0;
+            for(let x=12;x<trimmed.width-12;x+=2){const offset=(y*trimmed.width+x)*4;if(answerInk[offset]<155&&answerInk[offset+1]<155&&answerInk[offset+2]<155)ink++;}
+            if(ink<bestInk){bestInk=ink;best=y;}
+          }
+          end=best;
+        }
+        const slice=document.createElement('canvas');slice.width=trimmed.width;slice.height=end-start;
+        slice.getContext('2d').drawImage(trimmed,0,start,trimmed.width,slice.height,0,0,trimmed.width,slice.height);
+        answerPages.push(slice.toDataURL('image/png'));slice.width=slice.height=0;start=end;
+      }
       questions.push({id:`paired-${number}`,stem:`Source question ${(number+1)/2}`,options:['A','B','C','D','E'],
         answer:correct>=0?correct:null,explanation:'',sourcePage:number,verified:correct>=0,
         imageQuestionData:qImage,imageQuestionWidth:question.crop.width,imageQuestionHeight:question.crop.height,
         imageQuestionRows:question.found.group?.map(row=>({top:row.top,bottom:row.bottom}))||[],
-        imageAnswerData:trimmed.toDataURL('image/jpeg',.91)});
+        imageAnswerPagesData:answerPages});
       answerCrop.width=0;answerCrop.height=0;trimmed.width=0;trimmed.height=0;
     }finally{question.crop.width=0;question.crop.height=0;answer.crop.width=0;answer.crop.height=0;}
     onProgress(questions.length,pdfjs.numPages/2);
@@ -525,12 +573,12 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
     header(page,`QUESTION ${number} / ${totalQuestions}`,blue);
     const questionStart=page;
     if(q.imageQuestionData){
-      const picture=await doc.embedJpg(q.imageQuestionData);
+      const picture=await (q.imageQuestionData.startsWith('data:image/png')?doc.embedPng(q.imageQuestionData):doc.embedJpg(q.imageQuestionData));
       const ratio=Math.min(510/picture.width,655/picture.height);
       const width=picture.width*ratio,height=picture.height*ratio;
       const left=42,top=750,bottom=top-height;
       page.drawImage(picture,{x:left,y:bottom,width,height});
-      const result=doc.addPage([595,842]);
+      let result=doc.addPage([595,842]);
       if(q.imageQuestionRows.length===5){
         for(const row of q.imageQuestionRows){
           const upper=top-row.top*ratio,lower=top-row.bottom*ratio;
@@ -539,9 +587,13 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
       }else goto(doc,page,[left,bottom,left+width,top],result);
       page.drawText('Tap an option to view the answer.',{x:42,y:42,size:10,font:regular,color:grey});
       header(result,'ANSWER & EXPLANATION',green);
-      const answerImage=await doc.embedJpg(q.imageAnswerData);
-      const answerRatio=Math.min(510/answerImage.width,665/answerImage.height);
-      result.drawImage(answerImage,{x:42,y:750-answerImage.height*answerRatio,width:answerImage.width*answerRatio,height:answerImage.height*answerRatio});
+      const answerData=q.imageAnswerPagesData||[q.imageAnswerData];
+      for(let part=0;part<answerData.length;part++){
+        if(part){result=doc.addPage([595,842]);header(result,`ANSWER & EXPLANATION · QUESTION ${number} · CONTINUED`,green);}
+        const data=answerData[part],answerImage=await (data.startsWith('data:image/png')?doc.embedPng(data):doc.embedJpg(data));
+        const answerRatio=Math.min(510/answerImage.width,665/answerImage.height);
+        result.drawImage(answerImage,{x:42,y:750-answerImage.height*answerRatio,width:answerImage.width*answerRatio,height:answerImage.height*answerRatio});
+      }
       result.drawText('Try this question again',{x:42,y:69,size:11,font:bold,color:blue});goto(doc,result,[40,63,230,84],page);
       lastAnswerPages.push(result);
       if(qi%5===0||qi===questions.length-1){onProgress(qi+1,questions.length);await new Promise(resolve=>setTimeout(resolve,0));}
