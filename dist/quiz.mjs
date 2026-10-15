@@ -143,7 +143,9 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
           // image objects never resolve. Exclude them using operator metadata.
           if(args[1]>=1000&&args[2]<=300&&args[1]/args[2]>4)continue;
           const image=page.objs.has(args[0])?page.objs.get(args[0]):await new Promise(resolve=>page.objs.get(args[0],resolve));
-          if(!image?.data)continue;
+          // PDF.js in browsers supplies { bitmap, width, height }; Node
+          // supplies raw pixel data. Accept both for the same source PDF.
+          if(!image?.width||!image?.height)continue;
           embedded.push(image);
         }
         if(!embedded.length)throw new Error(`Source page ${pageNumber}: question screenshot was not found. No incomplete PDF exported.`);
@@ -152,15 +154,17 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
         const ctx=crop.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,crop.width,crop.height);
         let top=0;
         for(const image of embedded){
-          const pixels=new Uint8ClampedArray(image.width*image.height*4);
-          if(image.data.length===pixels.length)pixels.set(image.data);
-          else for(let p=0;p<image.width*image.height;p++){
-            const channels=image.data.length===image.width*image.height?1:3;
-            pixels[p*4]=image.data[p*channels];pixels[p*4+1]=image.data[p*channels+(channels>1?1:0)];
-            pixels[p*4+2]=image.data[p*channels+(channels>1?2:0)];pixels[p*4+3]=255;
-          }
           const tile=document.createElement('canvas');tile.width=image.width;tile.height=image.height;
-          tile.getContext('2d').putImageData(new ImageData(pixels,image.width,image.height),0,0);
+          if(image.data){
+            const pixels=new Uint8ClampedArray(image.width*image.height*4);
+            if(image.data.length===pixels.length)pixels.set(image.data);
+            else for(let p=0;p<image.width*image.height;p++){
+              const channels=image.data.length===image.width*image.height?1:3;
+              pixels[p*4]=image.data[p*channels];pixels[p*4+1]=image.data[p*channels+(channels>1?1:0)];
+              pixels[p*4+2]=image.data[p*channels+(channels>1?2:0)];pixels[p*4+3]=255;
+            }
+            tile.getContext('2d').putImageData(new ImageData(pixels,image.width,image.height),0,0);
+          }else tile.getContext('2d').drawImage(image.bitmap||image,0,0);
           ctx.drawImage(tile,0,top);top+=image.height+8;tile.width=tile.height=0;
         }
         const pixels=crop.getContext('2d',{willReadFrequently:true}).getImageData(0,0,crop.width,crop.height).data;
