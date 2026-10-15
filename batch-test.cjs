@@ -6,7 +6,7 @@ const w=dom.window;
 w.Blob=Blob;w.File=File;w.URL.createObjectURL=()=> 'blob:test';w.URL.revokeObjectURL=()=>{};
 w.HTMLElement.prototype.scrollIntoView=()=>{};
 w.eval(fs.readFileSync('dist/vendor/pdf-lib.min.js','utf8'));
-const app=fs.readFileSync('dist/app.js','utf8').replaceAll("await import('./quiz.mjs?v=20261015d')",'globalThis.__quizModule');
+const app=fs.readFileSync('dist/app.js','utf8').replaceAll("await import('./quiz.mjs?v=20261015e')",'globalThis.__quizModule');
 w.eval(app+';globalThis.__getOutputs=()=>outputs;');
 (async()=>{
  const quiz=await import('./dist/quiz.mjs');globalThis.PDFLib=require('pdf-lib');

@@ -191,8 +191,29 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
       answerCrop.getContext('2d').drawImage(answer.crop,0,top,answer.crop.width,answerCrop.height,0,0,answerCrop.width,answerCrop.height);
       const answerPixels=answerCrop.getContext('2d',{willReadFrequently:true}).getImageData(0,0,answerCrop.width,answerCrop.height).data;
       const content=imageQuizContentBounds(answerPixels,answerCrop.width,answerCrop.height);
-      const trimmed=document.createElement('canvas');trimmed.width=content.width;trimmed.height=content.height;
-      trimmed.getContext('2d').drawImage(answerCrop,content.x,content.y,content.width,content.height,0,0,content.width,content.height);
+      // The generic content bounds deliberately ignore the bottom 4.5% of a
+      // page. These source screenshots often have their last sentence there.
+      // Keep the existing top crop (it removes the repeated marked question),
+      // while retaining every pixel from there through the screenshot bottom.
+      const trimmed=document.createElement('canvas');trimmed.width=content.width;trimmed.height=answerCrop.height-content.y;
+      trimmed.getContext('2d').drawImage(answerCrop,content.x,content.y,content.width,trimmed.height,0,0,content.width,trimmed.height);
+      // The source marks the correct option green but leaves incorrect option
+      // headings gray. Tint only those gray header backgrounds, leaving their
+      // dark text and the explanation/table contents intact.
+      if(repeat){
+        const ctx=trimmed.getContext('2d',{willReadFrequently:true});
+        for(const row of rows){
+          if(row.kind!=='gray'||row.top<=repeat.bottom||row.bottom-row.top>80)continue;
+          const y=Math.max(0,row.top-top-content.y),end=Math.min(trimmed.height,row.bottom-top-content.y);
+          if(end<=y)continue;
+          const strip=ctx.getImageData(0,y,trimmed.width,end-y),pixels=strip.data;
+          for(let p=0;p<pixels.length;p+=4){
+            const r=pixels[p],g=pixels[p+1],b=pixels[p+2];
+            if(r>=210&&r<241&&g>=198&&g<239&&b>=185&&b<232&&r>=g&&g>=b){pixels[p]=249;pixels[p+1]=216;pixels[p+2]=219;}
+          }
+          ctx.putImageData(strip,0,y);
+        }
+      }
       const answerPages=[];
       const maxHeight=Math.max(1,Math.floor(665*trimmed.width/510));
       // A small overflow is more readable on one page than on an almost
@@ -202,12 +223,23 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
       for(let start=0;start<trimmed.height;){
         let end=Math.min(trimmed.height,start+pageHeight);
         if(end<trimmed.height){
-          let best=end,bestInk=Infinity;
-          for(let y=Math.max(start+Math.floor(pageHeight*.76),end-90);y<end;y++){
+          const first=Math.max(start+Math.floor(pageHeight*.68),end-160);
+          let best=end,bestScore=-Infinity,runStart=-1;
+          const consider=(runEnd)=>{
+            if(runStart<0)return;
+            const length=runEnd-runStart,middle=Math.floor((runStart+runEnd)/2);
+            const score=length*10+(middle-first)/(end-first);
+            if(length>=4&&score>bestScore){bestScore=score;best=middle;}
+            runStart=-1;
+          };
+          for(let y=first;y<end;y++){
             let ink=0;
             for(let x=12;x<trimmed.width-12;x+=2){const offset=(y*trimmed.width+x)*4;if(answerInk[offset]<155&&answerInk[offset+1]<155&&answerInk[offset+2]<155)ink++;}
-            if(ink<bestInk){bestInk=ink;best=y;}
+            if(ink<=2){if(runStart<0)runStart=y;}else consider(y);
           }
+          consider(end);
+          // If there is no clear paragraph/row gap, preserve every pixel and
+          // break at the page limit rather than dropping the trailing text.
           end=best;
         }
         const slice=document.createElement('canvas');slice.width=trimmed.width;slice.height=end-start;
@@ -562,7 +594,7 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
   const doc = existing?.doc||await PDFDocument.create(), regular = await doc.embedFont(StandardFonts.Helvetica), bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const ink = rgb(.11,.17,.27), green = rgb(.08,.47,.28), red = rgb(.74,.15,.17), amber = rgb(.52,.36,.09), blue = rgb(.15,.32,.75), grey = rgb(.39,.45,.54);
   const questionPages = [], lastAnswerPages=[];
-  const heading = ascii(title.trim() || 'MCQ Question Bank');
+  const heading = ascii(title.trim().replace(/_/g,' ') || 'MCQ Question Bank');
   const header = (page, label, color) => {
     page.drawRectangle({x:0,y:794,width:595,height:48,color});
     let short=heading;
