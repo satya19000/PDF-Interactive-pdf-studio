@@ -151,9 +151,10 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
       const repeat=greenRows[1];
       const from=greenRows[0]?.bottom||group?.[4]?.bottom||0;
       const after=repeat?.bottom||from;
-      const next=rows.find(row=>row.kind==='gray'&&row.top>after+10);
       const top=repeat&&from?Math.min(answer.crop.height-1,Math.max(from+2,repeat.top-60)):0;
-      const bottom=next&&next.top>top+80?next.top:answer.crop.height;
+      // Keep the entire discussion, including distractor explanations and
+      // any figures below the first correct-answer paragraph.
+      const bottom=answer.crop.height;
       const answerCrop=document.createElement('canvas');
       answerCrop.width=answer.crop.width;answerCrop.height=Math.max(1,bottom-top);
       answerCrop.getContext('2d').drawImage(answer.crop,0,top,answer.crop.width,answerCrop.height,0,0,answerCrop.width,answerCrop.height);
@@ -449,6 +450,31 @@ export function parseMyPastest(pages) {
     const explanation=sections.join(' ');
     return {id:`mypastest-${entry.id}`,stem,options,answer,explanation,explanationSections:sections,sourcePage:entry.page+1,verified:Number.isInteger(answer)};
   }).filter(q=>q&&q.stem&&q.options.every(Boolean));
+}
+
+export async function captureMyPastestFigures(pdfjs,questions,onProgress=()=>{}) {
+  for(let qi=0;qi<questions.length;qi++){
+    const q=questions[qi],end=questions[qi+1]?.sourcePage??pdfjs.numPages+1;
+    for(let number=q.sourcePage;number<end;number++){
+      const page=await pdfjs.getPage(number),ops=await page.getOperatorList();
+      const {OPS}=globalThis.pdfjsLib||{};
+      // The exported MyPastest pages contain small repeated UI icons. A
+      // substantial embedded image indicates a clinical figure to preserve.
+      const figures=ops.argsArray.filter((args,i)=>
+        (OPS?ops.fnArray[i]===OPS.paintImageXObject:args?.[0]?.startsWith?.('img_'))&&
+        Array.isArray(args)&&Number(args[1])>=400&&Number(args[2])>=350);
+      if(!figures.length)continue;
+      const base=page.getViewport({scale:1}),scale=Math.min(1.6,1900/Math.max(base.width,base.height));
+      const viewport=page.getViewport({scale}),canvas=document.createElement('canvas');
+      canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+      try{
+        await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+        q.visualData=canvas.toDataURL('image/jpeg',.88);
+        q.hasVisual=true;
+      }finally{canvas.width=0;canvas.height=0;page.cleanup?.();}
+    }
+    if(qi%10===0||qi===questions.length-1){onProgress(qi+1,questions.length);await new Promise(resolve=>setTimeout(resolve,0));}
+  }
 }
 
 function ascii(value) { return String(value || '').replace(/[^\x20-\x7e]/g, c => ({'×':'x','µ':'u','μ':'u','°':' degrees ','–':'-','—':'-','’':"'"}[c] || ' ')); }

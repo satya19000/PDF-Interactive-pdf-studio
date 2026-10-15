@@ -91,7 +91,7 @@ async function readExistingQuiz(file){
  return {doc,questionCount,originalPageCount:doc.getPageCount(),title:doc.getTitle()||stem(file.name)};
 }
 async function extractQuiz(item,report=setProgress){
- const {parseBmj,parseMyPastest,parseStructured,parseVisualOptionBank,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,captureVisualFigures,recognizeScannedPage,extractPairedImageBank}=await import('./quiz.mjs?v=20261015a');
+ const {parseBmj,parseMyPastest,parseStructured,parseVisualOptionBank,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,captureMyPastestFigures,captureVisualFigures,recognizeScannedPage,extractPairedImageBank}=await import('./quiz.mjs?v=20261015b');
  if(ext(item.file.name)==='pdf'){
   const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
   const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer()),disableFontFace:true}).promise;
@@ -116,7 +116,7 @@ async function extractQuiz(item,report=setProgress){
     return all;
    }
    const myPastest=parseMyPastest(pages);
-   if(myPastest.length){item.expectedMCQs=new Set(pages.flatMap(items=>items.map(i=>/questionIndex=(\d+)/i.exec(i.str||'')).filter(Boolean).map(m=>m[1]))).size;if(myPastest.length!==item.expectedMCQs)throw new Error(`Source has ${item.expectedMCQs} distinct question indexes, but ${myPastest.length} were extracted.`);return myPastest;}
+   if(myPastest.length){item.expectedMCQs=new Set(pages.flatMap(items=>items.map(i=>/questionIndex=(\d+)/i.exec(i.str||'')).filter(Boolean).map(m=>m[1]))).size;if(myPastest.length!==item.expectedMCQs)throw new Error(`Source has ${item.expectedMCQs} distinct question indexes, but ${myPastest.length} were extracted.`);item.state='Preserving clinical figures…';render();await captureMyPastestFigures(pdfjs,myPastest,(done,total)=>report(55+done/total*30,`${item.file.name}: checking figures ${done}/${total}`));return myPastest;}
    const bmj=parseBmj(pages);if(bmj.length){item.expectedMCQs=new Set(pages.flatMap(items=>items.map(i=>/Question\s+(\d+)\s+of\s+(\d+)/i.exec(i.str||'')).filter(Boolean).map(m=>`${m[2]}-${m[1]}`))).size;await inferBmjAnswerColors(pdfjs,bmj,(done,total)=>{item.state=`Checking answer key ${done}/${total}`;report(50+done/total*25,`${item.file.name}: checking answers ${done} of ${total} (${Math.round(50+done/total*25)}%)`);render()});item.state='Preserving question figures…';report(75,`${item.file.name}: preserving question figures (75%)`);render();await captureBmjFigures(pdfjs,bmj,(done,total)=>report(75+done/total*5,`${item.file.name}: preserving figure ${done} of ${total} (${Math.round(75+done/total*5)}%)`));return bmj;}
    const visual=parseVisualOptionBank(pages);
    if(visual.length){item.state=`Found ${visual.length} questions`;report(55,`${item.file.name}: ${visual.length} questions found; preserving source tables`);render();await captureVisualFigures(pdfjs,visual);return visual;}
@@ -150,7 +150,7 @@ async function convert(){
  const candidates=queue.filter(i=>!i.unsupported),quiz=$('quizMode').checked;
  const opts={index:$('index').checked,notes:$('notes').checked,checks:$('checks').checked,mcqs:$('mcqs').checked};
  if(quiz&&!$('combineMode').checked){
-  const {buildQuizPdf}=await import('./quiz.mjs?v=20261015a');let done=0,skipped=0,failed=0;
+  const {buildQuizPdf}=await import('./quiz.mjs?v=20261015b');let done=0,skipped=0,failed=0;
   try{
    for(const item of queue){
     if(item.unsupported){item.error=null;item.state='Skipped · unsupported format';skipped++;done++;render();continue;}
@@ -159,7 +159,7 @@ async function convert(){
      const previous=await readExistingQuiz(item.file);
      if(previous){
       const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');
-      const {extractLegacyQuizPdf}=await import('./quiz.mjs?v=20261015a');
+      const {extractLegacyQuizPdf}=await import('./quiz.mjs?v=20261015b');
       GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
       const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer())}).promise;
       try{item.questions=await extractLegacyQuizPdf(pdfjs,(current,total)=>setProgress((done+current/total*.75)/queue.length*90,`${item.file.name}: restoring ${current}/${total} questions`));}
@@ -201,7 +201,7 @@ async function convert(){
       sawBase=true;baseTitle=previous.title;
       if(previous.originalPageCount===previous.questionCount*6){
        const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');
-       const {extractLegacyQuizPdf}=await import('./quiz.mjs?v=20261015a');
+       const {extractLegacyQuizPdf}=await import('./quiz.mjs?v=20261015b');
        GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
        const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer())}).promise;
        try{item.questions=await extractLegacyQuizPdf(pdfjs,(current,total)=>setProgress(Math.round((i+current/total)/candidates.length*75),`${item.file.name}: restoring old quiz ${current}/${total}`));}
@@ -226,7 +226,7 @@ async function convert(){
    }
    if(!allQuestions.length){setProgress(100,`No new recognizable MCQs found. ${skipped.length} skipped${failed.length?`, ${failed.length} failed`:''}. See the file list.`);return;}
    const title=baseTitle||$('title').value.trim()||stem(included[0].file.name);
-   const {buildQuizPdf}=await import('./quiz.mjs?v=20261015a');
+   const {buildQuizPdf}=await import('./quiz.mjs?v=20261015b');
    const result=await buildQuizPdf(allQuestions,title,(current,total,phase)=>{
     const percent=Math.round(75+(phase?24:current/total*24));
     setProgress(percent,`${phase||'Building combined quiz'}: ${current} of ${total} questions (${percent}%)`);
@@ -276,7 +276,7 @@ $('combineDownloaded').onclick=async()=>{
  $('combineDownloaded').disabled=true;$('combineDownload').hidden=true;
  try{
   const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');
-  const {buildQuizPdf}=await import('./quiz.mjs?v=20261015a');
+  const {buildQuizPdf}=await import('./quiz.mjs?v=20261015b');
   GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
   const all=[];
   for(let i=0;i<files.length;i++){
