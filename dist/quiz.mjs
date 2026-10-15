@@ -400,6 +400,57 @@ export function validateQuiz(questions) {
   return questions.filter(q => !q.stem || q.options.length < 2 || q.options.length > 5 || (Number.isInteger(q.answer) && (q.answer < 0 || q.answer >= q.options.length)) || (q.hasVisual&&!q.visualData));
 }
 
+// Printed MyPastest PDFs identify each question in a footer URL and often
+// continue the answer discussion on the following page.
+export function parseMyPastest(pages) {
+  const starts=[],seen=new Set();
+  for(let i=0;i<pages.length;i++){
+    const text=pages[i].map(x=>x.str||'').join(' ');
+    if(!/MyPastest/i.test(text)||!/questionIndex=\d+/.test(text))continue;
+    const id=Number(/questionIndex=(\d+)/.exec(text)[1]);
+    const hasFeedback=pages[i].some(x=>/Your answer was (?:correct|incorrect)/i.test(x.str||''));
+    if(hasFeedback&&!seen.has(id)){starts.push({id,page:i});seen.add(id);}
+  }
+  if(!starts.length)return [];
+  const toRows=items=>{
+    const rows=[];
+    for(const item of items.filter(x=>(x.str||'').trim()&&x.transform[4]>=35&&x.transform[4]<540)){
+      const x=item.transform[4],y=item.transform[5],same=rows.find(r=>Math.abs(r.y-y)<2);
+      if(same)same.items.push({x,text:item.str.trim()});else rows.push({y,items:[{x,text:item.str.trim()}]});
+    }
+    return rows.sort((a,b)=>b.y-a.y).map(r=>({y:r.y,x:Math.min(...r.items.map(i=>i.x)),text:r.items.sort((a,b)=>a.x-b.x).map(i=>i.text).join(' ').replace(/\s+([.,;:])/g,'$1')}));
+  };
+  const ignored=/^(?:MyPastest|Your answer was|Explanation$|Chat with AI Tutor|Next Question|Previous Question|Tag Question|Feedback|End Session|Rate this question|Diff\s*ficulty:|Peer Responses|Show More Questions|Session Progress|Responses |External Links|https?:|\d+\/\d+\/\d+|\d+\/\d+$)/i;
+  return starts.map((entry,index)=>{
+    const first=toRows(pages[entry.page]);
+    const ex=first.find(r=>/^Explanation$/.test(r.text));
+    const answerMessage=first.find(r=>/^Your answer was/.test(r.text));
+    if(!ex||!answerMessage)return null;
+    const labels=first.filter(r=>r.y<answerMessage.y&&r.y>ex.y&&r.x>=45&&r.x<65&&/^[A-E](?:\s|$)/.test(r.text)).slice(0,5);
+    if(labels.length<2||labels.some((r,i)=>r.text[0]!==letters[i]))return null;
+    const stem=first.filter(r=>r.y>answerMessage.y+14&&r.x<45&&!ignored.test(r.text)).map(r=>r.text).join(' ').trim();
+    const options=labels.map((label,i)=>first.filter(r=>r.y<=label.y+2&&r.y>(labels[i+1]?.y??ex.y)+2&&r.x>=45&&r.x<530).map(r=>r.text.replace(/^[A-E]\s+(?=\S)/,'')).join(' ').trim());
+    const feedbackRows=first.filter(r=>r.y<ex.y-4&&r.y>38&&!ignored.test(r.text));
+    let answer=null;
+    for(const row of feedbackRows){if(row.x>=45&&row.x<65&&/^[A-E](?:\s|$)/.test(row.text)){answer=letters.indexOf(row.text[0]);break;}}
+    const end=starts[index+1]?.page??pages.length;
+    for(let p=entry.page+1;p<end;p++){
+      if(pages[p].some(x=>/Your answer was (?:correct|incorrect)/i.test(x.str||'')))break;
+      feedbackRows.push(...toRows(pages[p]).filter(r=>r.y>38&&r.x<400&&!ignored.test(r.text)));
+    }
+    const sections=[];
+    for(const row of feedbackRows){
+      const text=row.text.replace(/Chat with AI Tutor/gi,'').trim();
+      if(!text||ignored.test(text))continue;
+      if(row.x>=45&&row.x<65&&/^[A-E](?:\s|$)/.test(text))sections.push(text);
+      else if(sections.length)sections[sections.length-1]+=' '+text;
+      else sections.push(text);
+    }
+    const explanation=sections.join(' ');
+    return {id:`mypastest-${entry.id}`,stem,options,answer,explanation,explanationSections:sections,sourcePage:entry.page+1,verified:Number.isInteger(answer)};
+  }).filter(q=>q&&q.stem&&q.options.every(Boolean));
+}
+
 function ascii(value) { return String(value || '').replace(/[^\x20-\x7e]/g, c => ({'×':'x','µ':'u','μ':'u','°':' degrees ','–':'-','—':'-','’':"'"}[c] || ' ')); }
 function lineCount(text,font,size,width){let lines=1,line='';for(const word of ascii(text).split(/\s+/)){if(font.widthOfTextAtSize((line?line+' ':'')+word,size)<=width)line+=(line?' ':'')+word;else{lines++;line=word}}return lines}
 function wrappedLines(text,width,font,size) {
@@ -432,7 +483,7 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
   const totalQuestions=startNumber+questions.length;
   const doc = existing?.doc||await PDFDocument.create(), regular = await doc.embedFont(StandardFonts.Helvetica), bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const ink = rgb(.11,.17,.27), green = rgb(.08,.47,.28), red = rgb(.74,.15,.17), amber = rgb(.52,.36,.09), blue = rgb(.15,.32,.75), grey = rgb(.39,.45,.54);
-  const questionPages = [], answerPages = [], visualPages=[];
+  const questionPages = [], lastAnswerPages=[];
   const heading = ascii(title.trim() || 'MCQ Question Bank');
   const header = (page, label, color) => {
     page.drawRectangle({x:0,y:794,width:595,height:48,color});
@@ -442,20 +493,18 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
     page.drawText(short,{x:42,y:819,size:12,font:bold,color:rgb(1,1,1)});
     page.drawText(label,{x:42,y:801,size:10,font:bold,color:rgb(1,1,1)});
   };
-  for (const q of questions) {
-    const question = doc.addPage([595,842]); questionPages.push(question);
-    answerPages.push(doc.addPage([595,842]));
-    visualPages.push(q.visualData?doc.addPage([595,842]):null);
-  }
   for (let qi=0; qi<questions.length; qi++) {
-    const q=questions[qi], page=questionPages[qi], result=answerPages[qi];
-    header(page,`QUESTION ${startNumber+qi+1} / ${totalQuestions}`,blue);
+    const q=questions[qi], number=startNumber+qi+1;
+    let page=doc.addPage([595,842]);questionPages.push(page);
+    header(page,`QUESTION ${number} / ${totalQuestions}`,blue);
+    const questionStart=page;
     if(q.imageQuestionData){
       const picture=await doc.embedJpg(q.imageQuestionData);
       const ratio=Math.min(510/picture.width,655/picture.height);
       const width=picture.width*ratio,height=picture.height*ratio;
       const left=42,top=750,bottom=top-height;
       page.drawImage(picture,{x:left,y:bottom,width,height});
+      const result=doc.addPage([595,842]);
       if(q.imageQuestionRows.length===5){
         for(const row of q.imageQuestionRows){
           const upper=top-row.top*ratio,lower=top-row.bottom*ratio;
@@ -468,67 +517,77 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
       const answerRatio=Math.min(510/answerImage.width,665/answerImage.height);
       result.drawImage(answerImage,{x:42,y:750-answerImage.height*answerRatio,width:answerImage.width*answerRatio,height:answerImage.height*answerRatio});
       result.drawText('Try this question again',{x:42,y:69,size:11,font:bold,color:blue});goto(doc,result,[40,63,230,84],page);
-      if(questionPages[qi+1]){result.drawText('Next question  >',{x:390,y:69,size:11,font:bold,color:blue});goto(doc,result,[382,63,555,84],questionPages[qi+1]);}
+      lastAnswerPages.push(result);
       if(qi%5===0||qi===questions.length-1){onProgress(qi+1,questions.length);await new Promise(resolve=>setTimeout(resolve,0));}
       continue;
     }
-    let y=754,stemSize=12,stemLine=17;
-    const minOptionHeight=58;
-    while(stemSize>9 && y-lineCount(q.stem,regular,stemSize,510)*stemLine-34-q.options.length*minOptionHeight<65){stemSize--;stemLine=stemSize*1.38;}
-    if(y-lineCount(q.stem,regular,stemSize,510)*stemLine-34-q.options.length*minOptionHeight<65)throw new Error(`Question ${startNumber+qi+1} is too long for one quiz page. Edit its stem before export.`);
-    y=drawWrapped(page,q.stem,42,y,510,regular,stemSize,ink,stemLine)-34;
-    q.options.forEach((option,oi) => {
-      const height=Math.max(minOptionHeight,Math.ceil(ascii(option).length/68)*16+26);
-      const bottom=y-height+12;
-      page.drawRectangle({x:41,y:bottom,width:512,height:height-6,borderWidth:1,borderColor:rgb(.75,.80,.89),color:rgb(.975,.983,1)});
-      page.drawText(`${letters[oi]}.`,{x:54,y:y-11,size:12,font:bold,color:blue});
-      drawWrapped(page,option,79,y-11,460,regular,11,ink,15);
-      goto(doc,page,[41,bottom,553,bottom+height-6],result);
-      y=bottom-14;
+    let y=754,stemSize=11.5,stemLine=16;
+    const stemLines=wrappedLines(q.stem,510,regular,stemSize);
+    const options=q.options.map(option=>wrappedLines(option,460,regular,11));
+    const optionHeights=options.map(lines=>Math.max(32,lines.length*15+15));
+    const needed=stemLines.length*stemLine+12+optionHeights.reduce((a,b)=>a+b+6,0);
+    if(needed>2*680)throw new Error(`Question ${number} needs more than two question pages. No incomplete PDF exported.`);
+    for(const line of stemLines){
+      if(y<115){page=doc.addPage([595,842]);header(page,`QUESTION ${number} / ${totalQuestions} · CONTINUED`,blue);y=754;}
+      page.drawText(line,{x:42,y,size:stemSize,font:regular,color:ink});y-=stemLine;
+    }
+    y-=12;
+    const choiceLinks=[];
+    options.forEach((lines,oi)=>{
+      const height=optionHeights[oi];
+      if(y-height<99){page=doc.addPage([595,842]);header(page,`QUESTION ${number} / ${totalQuestions} · CONTINUED`,blue);y=754;}
+      const bottom=y-height;
+      page.drawRectangle({x:41,y:bottom,width:512,height,borderWidth:1,borderColor:rgb(.75,.80,.89),color:rgb(.975,.983,1)});
+      page.drawText(`${letters[oi]}.`,{x:52,y:y-19,size:11,font:bold,color:blue});
+      lines.forEach((line,row)=>page.drawText(line,{x:79,y:y-19-row*15,size:11,font:regular,color:ink}));
+      choiceLinks.push({page,rect:[41,bottom,553,y]});y=bottom-6;
     });
-    if(visualPages[qi]){page.drawText('View source figure  >',{x:42,y:42,size:10,font:bold,color:blue});goto(doc,page,[40,36,188,56],visualPages[qi]);}
-    else page.drawText('Choose an option to view the answer.',{x:42,y:42,size:10,font:regular,color:grey});
-    if(visualPages[qi]){const figure=visualPages[qi],image=await doc.embedJpg(q.visualData),ratio=Math.min(510/image.width,670/image.height);header(figure,`SOURCE FIGURE · QUESTION ${startNumber+qi+1}`,blue);figure.drawImage(image,{x:42,y:750-image.height*ratio,width:image.width*ratio,height:image.height*ratio});figure.drawText('Back to question',{x:42,y:42,size:11,font:bold,color:blue});goto(doc,figure,[40,35,210,60],page);}
+    if(page!==questionStart&&doc.getPageCount()-doc.getPages().indexOf(questionStart)>2)throw new Error(`Question ${number} exceeds two question pages.`);
+    const result=doc.addPage([595,842]);
+    for(const choice of choiceLinks)goto(doc,choice.page,choice.rect,result);
+    page.drawText('Choose an option to view the answer.',{x:42,y:42,size:10,font:regular,color:grey});
     {
       const hasAnswer=Number.isInteger(q.answer);
       header(result,hasAnswer?'ANSWER & EXPLANATION':'NO ANSWER FOR THIS QUESTION',hasAnswer?green:amber);
-      let ry=750;
+      let ry=754,answerPage=result;
+      const nextAnswerPage=()=>{const next=doc.addPage([595,842]);header(next,`ANSWER & EXPLANATION · QUESTION ${number} · CONTINUED`,hasAnswer?green:amber);answerPage=next;ry=754;return next;};
+      const drawAnswerLine=(text,font,size,color,lineHeight=15)=>{
+        for(const line of wrappedLines(text,510,font,size)){
+          if(ry<105)nextAnswerPage();
+          answerPage.drawText(line,{x:42,y:ry,size,font,color});ry-=lineHeight;
+        }
+      };
       if(hasAnswer){
         for(let oi=0;oi<q.options.length;oi++){
           const correct=oi===q.answer;
-          ry=drawWrapped(result,`${letters[oi]}. ${q.options[oi]}${correct?'  (Correct answer)':''}`,42,ry,510,correct?bold:regular,11,correct?green:red,15)-8;
+          drawAnswerLine(`${letters[oi]}. ${q.options[oi]}${correct?'  (Correct answer)':''}`,correct?bold:regular,11,correct?green:red);ry-=4;
         }
-        ry-=18;
-      }else ry=drawWrapped(result,'No answer for this question',42,ry,510,bold,12,amber,18)-32;
-      result.drawText('EXPLANATION',{x:42,y:ry,size:12,font:bold,color:ink});
-      const explanation=q.explanation?.trim()||'No explanation provided.';
-      const lines=wrappedLines(explanation,510,regular,11),start=ry-27;
-      if(start-lines.length*16>=105){lines.forEach((line,index)=>result.drawText(line,{x:42,y:start-index*16,size:11,font:regular,color:ink}));}
-      else {
-        const previewCount=Math.max(0,Math.min(10,Math.floor((start-145)/16)));
-        lines.slice(0,previewCount).forEach((line,index)=>result.drawText(line,{x:42,y:start-index*16,size:11,font:regular,color:ink}));
-        const detailPages=[];
-        for(let offset=0;offset<lines.length;offset+=38)detailPages.push(doc.addPage([595,842]));
-        detailPages.forEach((detail,index)=>{
-          header(detail,`EXPLANATION · QUESTION ${startNumber+qi+1} · PAGE ${index+1}/${detailPages.length}`,blue);
-          lines.slice(index*38,(index+1)*38).forEach((line,row)=>detail.drawText(line,{x:42,y:754-row*16,size:11,font:regular,color:ink}));
-          detail.drawText(index?'Previous explanation page':'Back to result',{x:42,y:69,size:11,font:bold,color:blue});
-          goto(doc,detail,[40,63,245,84],index?detailPages[index-1]:result);
-          if(detailPages[index+1]){detail.drawText('Continue  >',{x:420,y:69,size:11,font:bold,color:blue});goto(doc,detail,[412,63,555,84],detailPages[index+1]);}
-        });
-        result.drawText('Read full explanation  >',{x:42,y:112,size:11,font:bold,color:blue});
-        goto(doc,result,[40,105,250,130],detailPages[0]);
-      }
-      result.drawText('Try this question again',{x:42,y:69,size:11,font:bold,color:blue}); goto(doc,result,[40,63,230,84],page);
-      if (questionPages[qi+1]) {result.drawText('Next question  >',{x:390,y:69,size:11,font:bold,color:blue});goto(doc,result,[382,63,555,84],questionPages[qi+1]);}
+        ry-=8;
+      }else{drawAnswerLine('No answer for this question',bold,12,amber,18);ry-=8;}
+      if(ry<135)nextAnswerPage();
+      answerPage.drawText('EXPLANATION',{x:42,y:ry,size:12,font:bold,color:ink});ry-=23;
+      // Preserve every option discussion in source order, with page breaks only when needed.
+      const sections=q.explanationSections?.length?q.explanationSections:[q.explanation?.trim()||'No explanation provided.'];
+      for(const section of sections){if(ry<135)nextAnswerPage();drawAnswerLine(section,regular,11,ink,15);ry-=6;}
+      lastAnswerPages.push(answerPage);
+      answerPage.drawText('Try this question again',{x:42,y:69,size:11,font:bold,color:blue});goto(doc,answerPage,[40,63,230,84],questionStart);
+      if(q.visualData){const figure=doc.addPage([595,842]),image=await doc.embedJpg(q.visualData),ratio=Math.min(510/image.width,670/image.height);header(figure,`SOURCE FIGURE · QUESTION ${number}`,blue);figure.drawImage(image,{x:42,y:750-image.height*ratio,width:image.width*ratio,height:image.height*ratio});figure.drawText('Back to question',{x:42,y:42,size:11,font:bold,color:blue});goto(doc,figure,[40,35,210,60],questionStart);questionStart.drawText('View source figure  >',{x:42,y:42,size:10,font:bold,color:blue});goto(doc,questionStart,[40,36,188,56],figure);}
     }
     if(qi%5===0||qi===questions.length-1){onProgress(qi+1,questions.length);await new Promise(resolve=>setTimeout(resolve,0));}
+  }
+  for(let qi=0;qi<questionPages.length-1;qi++){
+    const page=lastAnswerPages[qi],next=questionPages[qi+1];
+    page.drawText('Next question  >',{x:390,y:69,size:11,font:bold,color:blue});goto(doc,page,[382,63,555,84],next);
   }
   // A 100% PDF viewer now displays the old page's content at 150% size.
   // Scale link rectangles as well as visible content so choices remain clickable.
   for(const page of doc.getPages().slice(existing?.originalPageCount||0)) page.scale(1.5,1.5);
   doc.setTitle(ascii(title)); doc.setCreator('PDF Interactive Studio - Quiz PDF');
   doc.setKeywords(['PDF Interactive Studio quiz',`question-count:${totalQuestions}`]);
+  if(!existing){
+    const payload=JSON.stringify({format:'pdf-interactive-studio-questions-v1',title,questions});
+    await doc.attach(new TextEncoder().encode(payload),'quiz-data.json',{mimeType:'application/json',description:'Question data for combining PDFs'});
+  }
   onProgress(questions.length,questions.length,'Saving PDF');
   return {bytes:await doc.save({useObjectStreams:true}),pages:doc.getPageCount(),sourcePages:totalQuestions,mcqs:totalQuestions};
 }

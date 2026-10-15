@@ -3,3 +3,4 @@
 .mode-notice{background:#fff6dc;border:1px solid #ebcc78;color:#6e4b0b;border-radius:9px;padding:11px 13px;font-size:13px;line-height:1.5;margin:10px 0 18px}
 
 .folderpick{display:inline-flex;margin-top:12px;cursor:pointer}.folderpick input{position:absolute;width:1px;height:1px;opacity:0}.file .download{font-size:12px;margin-left:auto}.file .textbtn{padding:5px}.file{flex-wrap:wrap}
+#combinePanel{margin-top:24px}#combinePanel .hint{margin:0 0 18px}#combineFiles{display:block;width:100%;border:1px solid #dce2ed;border-radius:8px;padding:12px;margin:8px 0 14px;background:#f8faff}#combinePanel button{margin:0 0 12px}#combineStatus{font-size:13px;color:#65728a;margin:4px 0 10px}#combineDownload{display:inline-block;margin:4px 0 0}
