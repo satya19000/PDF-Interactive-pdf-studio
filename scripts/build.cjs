@@ -20,3 +20,4 @@ for (const [source, target] of Object.entries(assets)) {
   fs.copyFileSync(path.join(root, 'node_modules', source), path.join(output, target));
 }
 console.log('Ready: dist/ contains the complete application and bundled dependencies.');
+

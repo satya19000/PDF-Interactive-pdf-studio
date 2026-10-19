@@ -1,0 +1,9 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {eligible,remaining,score,shuffled} from '../dist/exam-core.mjs';
+const q=(id,answer=0,explanation='Original explanation')=>({id,stem:'Clinical stem?',options:['A','B','C','D','E'],answer,explanation});
+test('eligibility rejects missing answer, missing explanation, duplicate options and pixel-only answer',()=>{const {valid,rejected}=eligible([{name:'A.pdf',questions:[q('1'),q('2',null),q('3',1,''),{...q('4'),options:['A','A','C','D','E']},{...q('5'),imageQuestionData:'data:image/png;base64,abc'}]}]);assert.equal(valid.length,1);assert.equal(rejected.length,4);assert.equal(valid[0].explanation,'Original explanation')});
+test('sampling does not mutate the question pool or repeat IDs',()=>{const source=Array.from({length:200},(_,i)=>q(String(i)));const original=[...source];const picked=shuffled(source).slice(0,100);assert.deepEqual(source,original);assert.equal(new Set(picked.map(item=>item.id)).size,100)});
+test('timer derives from saved deadline and score counts unanswered without penalty',()=>{const attempt={startedAt:1000,endsAt:10801000,questions:[{...q('1'),source:'A.pdf'},{...q('2',2),source:'A.pdf'},{...q('3'),source:'B.pdf'}],answers:{0:0,1:1}};assert.equal(remaining(attempt,1000),10800000);assert.equal(remaining(attempt,10801001),0);const result=score(attempt);assert.deepEqual([result.correct,result.incorrect,result.unanswered,result.percent],[1,1,1,33]);assert.equal(result.bySource[0].correct,1)});
+
+test('image-based clinical question preserves original answer pages for later review',()=>{const source={name:'scan.pdf',questions:[{...q('image',3,''),imageQuestionData:'data:image/png;base64,abc',imageAnswerPagesData:['data:image/png;base64,def']}]};const {valid,rejected}=eligible([source]);assert.equal(valid.length,1);assert.equal(rejected.length,0);assert.deepEqual(valid[0].imageAnswerPagesData,source.questions[0].imageAnswerPagesData)});

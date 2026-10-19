@@ -1,6 +1,6 @@
 # PDF Interactive Studio
 
-Static, private-by-default browser application. Serve `dist/` with a static web server. No API keys or backend are required. Files are processed in memory and are not uploaded. Reloading clears the queue and generated files.
+Static browser application. Run `npm ci` and `npm run build` to restore bundled JavaScript dependencies, then serve `dist/` with a static web server. No API keys or backend are required. Files are processed in memory and are not uploaded. Reloading clears the queue and generated files.
 
 ## Features
 - Quiz mode accepts multiple files or a browser-selected folder. By default it converts each source separately and puts a PDF download button on that file’s queue row. Duplicate filenames from different subfolders receive distinct output names. Optional combined mode keeps continuous question numbering in one PDF.
@@ -23,7 +23,16 @@ No parser can guarantee finding every MCQ in arbitrary unnumbered scans. Separat
 Original-layout mode is explicitly labeled as keeping source pages and notes. Its optional choice markers are ungraded, and its output is named `-original-layout.pdf`. Use New quiz PDF mode for fresh questions and red/green feedback.
 
 ## Verification
-`npm ci`, `node test.cjs`, and `node batch-test.cjs` run integration checks using jsdom and a native canvas adapter. Tests write only temporary fixtures beneath `/workspace/scratch/d84423f2b585/qa`. The 31-page PDF test verifies existing field retention, review boxes, notes fields and index pages. The batch test verifies separate per-file outputs, mismatched-count blocking, skipped files, merged questions, and repeated continuation with modern clickable answers intact; a 63-page real question bank also yielded 169 questions and 167 answer keys through the PDF.js text path. Browser visual QA was unavailable in this environment.
+`npm ci`, `node test.cjs`, and `node batch-test.cjs` run integration checks using jsdom and a native canvas adapter. Tests write fixtures in temporary operating-system directories. The 31-page PDF test verifies existing field retention, review boxes, notes fields and index pages. The batch test verifies separate per-file outputs, mismatched-count blocking, skipped files, merged questions, and repeated continuation with modern clickable answers intact; a 63-page real question bank also yielded 169 questions and 167 answer keys through the PDF.js text path. Browser visual QA was unavailable in this environment.
 
 ## Dependencies
 Vendor copies from pinned npm packages: pdf-lib, JSZip, Mammoth, SheetJS, Tesseract.js and its WebAssembly core. English language data is bundled in `dist/vendor/ocr-lang/`. License files are in `dist/vendor/`. No remote scripts or analytics.
+
+## Local CBT practice (development branch)
+After a verified quiz conversion, section 04 can start an unofficial timed paper from the questions extracted in that browser. A full paper uses 100 questions and 180 minutes; custom tests can use 1–100 questions. Paper 2 excludes the latest completed Paper 1 questions if enough remain. Each source file acts as a subject filter; incorrect and bookmarked filters use locally saved papers. The navigator, answers, flags, bookmarks, active index, deadline and completed results are stored in IndexedDB. Atomic IndexedDB transactions and attempt revisions prevent one tab from overwriting another tab’s newer answers. Each answer is saved after selection; refresh resumes a saved paper. Incomplete answer keys, explanations or option sets are excluded from timed practice and counted. Image-only paired source questions enter practice only when their original answer images and answer key are present; those images appear in review.
+
+This is browser-local practice, not a secure or official MRCP examination. The answer key necessarily exists in the client and IndexedDB; the clock uses device time and cannot be trusted for high-stakes scoring. Clearing browser data removes history, and large scanned figures can exhaust the device storage quota. There is no login, server, administrator configuration or shared question database in this static Site. A separate private Site is used for preview. The existing PDF quiz, notes, original-layout and combine flows are unchanged.
+
+Run `node --test tests/exam-*.test.mjs`, `node test.cjs`, and `node batch-test.cjs` for automated checks. Browser visual inspection and real-device storage pressure testing remain pending. The previous live commit is the rollback point recorded in `docs/cbt-audit.md`.
+
+CBT preview: https://pdf-cbt-preview.badesatya65.chatgpt.site (private, main website awaits approval).
