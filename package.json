@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test tests/exam-*.test.mjs && node test.cjs && node batch-test.cjs",
+    "test": "node --test tests/exam-*.test.mjs tests/folder-batch.test.cjs tests/repair.test.mjs && node test.cjs && node batch-test.cjs",
     "build": "node scripts/build.cjs"
   },
   "keywords": [],

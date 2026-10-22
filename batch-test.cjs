@@ -3,7 +3,7 @@ const fs=require('fs');
 const assert=require('assert');
 const {JSDOM}=require('jsdom');
 const dom=new JSDOM(fs.readFileSync('dist/index.html','utf8'),{runScripts:'outside-only',url:'https://example.test/'});
-const w=dom.window;
+const w=dom.window;w.HTMLAnchorElement.prototype.click=function(){};
 w.Blob=Blob;w.File=File;w.URL.createObjectURL=()=> 'blob:test';w.URL.revokeObjectURL=()=>{};
 w.HTMLElement.prototype.scrollIntoView=()=>{};
 w.eval(fs.readFileSync('dist/vendor/pdf-lib.min.js','utf8'));
