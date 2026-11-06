@@ -593,7 +593,7 @@ function goto(doc, page, rectangle, target) {
   annotation.set(PDFName.of('A'),doc.context.obj({S:PDFName.of('GoTo'),D:destination}));
   page.node.addAnnot(doc.context.register(annotation));
 }
-export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing=null) {
+export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing=null, numbering=null) {
   if (!questions.length || validateQuiz(questions).length) throw new Error('Some questions could not be extracted. Try a text-based PDF with clear options.');
   const {PDFDocument,StandardFonts,rgb} = globalThis.PDFLib;
   const startNumber=existing?.questionCount||0;
@@ -604,6 +604,7 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
   const embedImage=data=>{if(!embeddedImages.has(data))embeddedImages.set(data,data.startsWith('data:image/png')?doc.embedPng(data):doc.embedJpg(data));return embeddedImages.get(data);};
   const heading = ascii(title.trim().replace(/_/g,' ') || 'MCQ Question Bank');
   const header = (page, label, color) => {
+    if(numbering)label=label.replace(/^QUESTION (\d+) \/ \d+/,(_,number)=>`QUESTION ${Number(number)+numbering.offset} / ${numbering.total}`);
     page.drawRectangle({x:0,y:794,width:595,height:48,color});
     let short=heading;
     while(short.length && bold.widthOfTextAtSize(short,12)>510) short=short.slice(0,-1);

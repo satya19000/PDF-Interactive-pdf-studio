@@ -4,19 +4,40 @@ const fs=require('node:fs');
 const {JSDOM}=require('jsdom');
 function app(){
  const dom=new JSDOM(fs.readFileSync('dist/index.html','utf8'),{runScripts:'outside-only',url:'https://example.test/'}),w=dom.window;
- const downloads=[];w.Blob=Blob;w.File=File;w.URL.createObjectURL=()=> 'blob:test';w.URL.revokeObjectURL=()=>{};
+ const downloads=[];w.Blob=Blob;w.File=File;w.Array=Array;w.Uint8Array=Uint8Array;w.URL.createObjectURL=()=> 'blob:test';w.URL.revokeObjectURL=()=>{};
  w.HTMLAnchorElement.prototype.click=function(){downloads.push(this.download)};w.HTMLElement.prototype.scrollIntoView=()=>{};
  const source=fs.readFileSync('dist/app.js','utf8').replaceAll("await import('./quiz.mjs?v=20261015e')",'globalThis.__quizModule');
  w.eval(source+';globalThis.__state=()=>({queue,outputs,busy});globalThis.__setDirectory=handle=>outputDirectory=handle;');
  return {w,dom,downloads};
 }
 const fileEntry=(name,file)=>({name,isFile:true,file:success=>success(file)});
+test('a PDF with no recognized questions yields downloadable original page parts',async()=>{
+ const {w,dom,downloads}=app();try{
+  w.PDFLib=require('pdf-lib');w.__quizModule={};
+  const source=await w.PDFLib.PDFDocument.create();
+  for(let i=0;i<101;i++)source.addPage([500+i,700]);
+  w.eval("readExistingQuiz=async()=>null;extractQuiz=async()=>[]");
+  w.add([new File([await source.save()],'scan.pdf')]);await w.convert();
+  const outputs=w.__state().outputs;assert.deepEqual(Array.from(outputs,o=>o.pages),[50,50,1],w.__state().queue[0].error);
+  const last=await w.PDFLib.PDFDocument.load(await outputs[2].blob.arrayBuffer());
+  assert.equal(last.getPage(0).getWidth(),600);assert.equal(downloads.length,0);
+ }finally{dom.window.close()}
+});
+test('long banks split at question boundaries and preserve numbering offsets',async()=>{
+ const {w,dom}=app();try{
+  const offsets=[];w.__quizModule={buildQuizPdf:async(q,_title,_report,_existing,numbering)=>{offsets.push(numbering.offset);return {bytes:new Uint8Array([1]),pages:q.length,mcqs:q.length}}};
+  w.eval("readExistingQuiz=async()=>null;extractQuiz=async item=>{item.expectedMCQs=101;return Array.from({length:101},()=>({stem:'Question',options:['A','B'],answer:0}))}");
+  w.add([new File(['questions'],'long.txt')]);await w.convert();
+  assert.deepEqual(offsets,[0,50,100]);assert.deepEqual(Array.from(w.__state().outputs,o=>o.mcqs),[50,50,1]);
+ }finally{dom.window.close()}
+});
 test('partial extraction exports a quiz and a separate report identifying the missing source question',async()=>{
  const {w,dom}=app();try{
   w.document.getElementById('autoDownload').checked=false;
   w.__quizModule={buildQuizPdf:async q=>({bytes:new Uint8Array([1]),pages:2,mcqs:q.length})};
   w.eval("readExistingQuiz=async()=>null;extractQuiz=async item=>{item.expectedMCQs=2;item.missingQuestions=[[319,[12,13]]];return [{stem:'Question',options:['A','B'],answer:0}]}");
-  w.add([new File(['pdf'],'cardiology.pdf')]);await w.convert();
+  w.PDFLib=require('pdf-lib');const source=await w.PDFLib.PDFDocument.create();source.addPage();
+  w.add([new File([await source.save()],'cardiology.pdf')]);await w.convert();
   assert.equal(w.__state().outputs[0].name,'cardiology-quiz-partial.pdf');
   const report=w.document.querySelector('a[download$="-missing.txt"]');
   assert.match(decodeURIComponent(report.href),/Question index 319.*12, 13/);
@@ -34,12 +55,12 @@ test('drop traverses every directory-reader batch, nested folders and unreadable
  assert.equal(w.__state().queue.length,206);assert.match(w.document.getElementById('queue').textContent,/Subject\/Nested\/question-0.txt/);
  }finally{dom.window.close()}
 });
-test('all files convert sequentially, duplicate names stay unique and failures do not stop automatic downloads',async()=>{
+test('all files convert sequentially, duplicate names stay unique and downloads require a click',async()=>{
  const {w,dom,downloads}=app();try{
  let running=0,max=0;w.__quizModule={buildQuizPdf:async q=>{running++;max=Math.max(max,running);await new Promise(r=>setTimeout(r,2));running--;return {bytes:new Uint8Array([1]),pages:2,mcqs:q.length}}};
  w.eval("readExistingQuiz=async()=>null;extractQuiz=async item=>{if(item.file.name==='bad.txt')throw Error('Unreadable source');item.expectedMCQs=1;return [{stem:'Question',options:['A','B'],answer:0,explanation:'Original explanation'}]}");
  const files=['a/same.txt','b/same.txt','c/third.txt','bad.txt','d/fourth.txt'].map(path=>{const file=new File(['question'],path.split('/').pop());Object.defineProperty(file,'webkitRelativePath',{value:'Subject/'+path});return file});
- w.add(files);await w.convert();const state=w.__state();assert.equal(state.outputs.length,4);assert.equal(max,1);assert.equal(downloads.length,4);assert.equal(new Set(downloads).size,4);assert.match(w.document.getElementById('queue').textContent,/Unreadable source/);assert.equal(state.busy,false);
+ w.add(files);await w.convert();const state=w.__state();assert.equal(state.outputs.length,4);assert.equal(max,1);assert.equal(downloads.length,0);await w.document.getElementById('downloadAll').onclick();assert.equal(new Set(downloads).size,4);assert.match(w.document.getElementById('queue').textContent,/Unreadable source/);assert.equal(state.busy,false);
  }finally{dom.window.close()}
 });
 test('direct folder saves avoid overwrites and continue after one write failure',async()=>{
@@ -49,14 +70,14 @@ test('direct folder saves avoid overwrites and continue after one write failure'
  w.__setDirectory(directory);w.__quizModule={buildQuizPdf:async q=>({bytes:new Uint8Array([1]),pages:2,mcqs:q.length})};
  w.eval("readExistingQuiz=async()=>null;extractQuiz=async item=>{item.expectedMCQs=1;return [{stem:'Question',options:['A','B'],answer:0,explanation:'Source explanation'}]}");
  w.add(['first','bad','last'].map(name=>new File(['question'],name+'.txt')));await w.convert();
- assert.deepEqual(writes,['first-quiz (2).pdf','last-quiz.pdf']);assert.equal(w.__state().outputs.length,3);assert.match(w.document.getElementById('downloadStatus').textContent,/1 saves failed/);
+ assert.deepEqual(writes,[]);await w.document.getElementById('downloadAll').onclick();assert.deepEqual(writes,['first-quiz (2).pdf','last-quiz.pdf']);assert.equal(w.__state().outputs.length,3);assert.match(w.document.getElementById('downloadStatus').textContent,/1 saves failed/);
  }finally{dom.window.close()}
 });
 test('modern interactive PDF batches preserve every file without reparsing as a legacy six-page quiz',async()=>{
  const {w,dom,downloads}=app();try{
  w.__quizModule={};w.eval("readExistingQuiz=async()=>({originalPageCount:4,questionCount:2,doc:{save:async()=>new Uint8Array([1,2,3])}})");
  w.add([new File(['pdf1'],'first.pdf'),new File(['pdf2'],'second.pdf')]);await w.convert();
- assert.equal(w.__state().outputs.length,2);assert.equal(downloads.length,2);assert.equal(w.__state().outputs[1].mcqs,2);
+ assert.equal(w.__state().outputs.length,2);assert.equal(downloads.length,0);assert.equal(w.__state().outputs[1].mcqs,2);
  }finally{dom.window.close()}
 });
 test('retry processes only saved failures and retains successful PDF downloads',async()=>{
