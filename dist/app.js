@@ -1,7 +1,7 @@
 /* All processing is local. No file bytes leave the browser. */
 const $=id=>document.getElementById(id);
 const allowed=new Set('pdf docx pptx xlsx xls csv tsv txt md json html htm png jpg jpeg webp bmp gif'.split(' '));
-let queue=[],outputs=[],busy=false,collecting=false;
+let queue=[],outputs=[],busy=false,collecting=false,conversionController=null;
 const droppedPaths=new WeakMap();
 const filePath=file=>file.webkitRelativePath||droppedPaths.get(file)||file.name;
 let outputDirectory=null,downloadChain=Promise.resolve();
@@ -80,6 +80,8 @@ function failureSnapshot(){
   expectedMCQs:item.expectedMCQs,extractedMCQs:item.questions?.length}))};
 }
 function render(){
+ if($('stopConversion')){$('stopConversion').hidden=!busy;$('stopConversion').disabled=!!conversionController?.signal.aborted;}
+
  window.dispatchEvent(new CustomEvent('pdf-conversion-state',{detail:failureSnapshot()}));
  $('count').textContent=queue.length+' files';$('queue').replaceChildren();
  if(!queue.length)$('queue').append(el('div','empty','Your conversion queue will appear here.'));
@@ -120,8 +122,8 @@ function heading(page,kind){page.drawRectangle({x:0,y:824,width:595,height:18,co
 if(opts.index){for(let i=0;i<Math.ceil(n/perIndex);i++){const p=doc.insertPage(i,[595,842]);heading(p,'Your page index');indices.push(p)}for(let i=0;i<n;i++){const p=indices[Math.floor(i/perIndex)];link(doc,p,`Source page ${i+1}`,52,704-(i%perIndex)*21,source[i],regular)}}
 if(opts.notes||opts.checks){const count=opts.checks?Math.ceil(n/18):1;for(let k=0;k<count;k++){const p=doc.addPage([595,842]);heading(p,'Reading worksheet'+(count>1?` ${k+1}`:''));worksheetPages.push(p);let y=704;if(opts.checks){p.drawText('Mark completed pages',{x:48,y,size:12,font:bold});y-=30;for(let i=k*18;i<Math.min(n,(k+1)*18);i++){const c=form.createCheckBox(prefix+'_review_'+i);c.addToPage(p,{x:50,y:y-3,width:13,height:13,borderWidth:1,borderColor:rgb(.5,.58,.75)});link(doc,p,`Source page ${i+1}`,76,y,source[i],regular);y-=23;}}if(opts.notes){y-=20;p.drawText('My notes',{x:48,y,size:12,font:bold});const field=form.createTextField(prefix+'_notes_'+k);field.enableMultiline();const height=Math.max(115,y-108);field.addToPage(p,{x:48,y:80,width:499,height,borderWidth:1,borderColor:rgb(.72,.77,.87),backgroundColor:rgb(.98,.985,1)});field.setFontSize(12);}if(indices.length)link(doc,p,'Back to page index',400,28,indices[0],regular);}}
 for(let i=0;i<indices.length;i++){const p=indices[i];if(i>0)link(doc,p,'Previous index',48,62,indices[i-1],regular);if(i+1<indices.length)link(doc,p,'Next index',220,62,indices[i+1],regular);if(worksheetPages.length)link(doc,p,'Open worksheet',400,62,worksheetPages[0],regular)}doc.setTitle(title);doc.setCreator('PDF Interactive Studio');return {bytes:await doc.save(),pages:doc.getPageCount(),sourcePages:n,mcqs:opts.mcqCount||0};}
-function showOutputs(){ queueOutputDownloads();window.dispatchEvent(new Event('quiz-ready'));  $('results').hidden=!outputs.length;$('zip').hidden=outputs.length<=1;$('outputs').replaceChildren();for(const o of outputs){const row=el('div','output');const info=el('div','filename',o.name);info.append(el('small','',o.quiz?`${o.mcqs} interactive questions · ${o.pages} total pages · ${human(o.blob.size)}`:o.study?`${o.notesPages} styled notes pages · ${o.sourcePages?`${o.sourcePages} original pages appended · `:''}${o.pages} total pages · ${human(o.blob.size)}`:`Original layout · ${o.sourcePages} source pages · ${o.mcqs} ungraded choice markers · ${o.pages} total pages · ${human(o.blob.size)}`));const a=el('a','download','Download PDF');a.href=o.url;a.download=o.name;if(o.downloadState)info.append(el('small',o.downloadFailed?'error':'',o.downloadState));row.append(el('div','fileicon','PDF'),info,a);$('outputs').append(row)}}
-function setProgress(value,message){$('progress').hidden=false;$('progress').value=Math.max(0,Math.min(100,value));$('progress').setAttribute('aria-label',message);$('status').textContent=message;}
+function showOutputs(){ queueOutputDownloads();window.dispatchEvent(new Event('quiz-ready'));  $('results').hidden=!outputs.length;$('zip').hidden=outputs.length<=1;$('outputs').replaceChildren();for(const o of outputs){const row=el('div','output');const info=el('div','filename',o.name);info.append(el('small','',o.quiz?`${o.mcqs} interactive questions · ${o.pages} total pages · ${human(o.blob.size)}`:o.study?`${o.notesPages} styled notes pages · ${o.sourcePages?`${o.sourcePages} original pages appended · `:''}${o.pages} total pages · ${human(o.blob.size)}`:`Original layout · ${o.sourcePages} source pages · ${o.mcqs} ungraded choice markers · ${o.pages} total pages · ${human(o.blob.size)}`));const a=el('a','download','Download PDF');a.href=o.url;a.download=o.name;if(o.downloadState)info.append(el('small',o.downloadFailed?'error':'',o.downloadState));row.append(el('div','fileicon','PDF'),info,a);if(o.reportText){const report=el('a','download','Missing questions report');report.href='data:text/plain;charset=utf-8,'+encodeURIComponent(o.reportText);report.download=o.name.replace(/\.pdf$/i,'-missing.txt');row.append(report)}$('outputs').append(row)}}
+function setProgress(value,message){if(conversionController?.signal.aborted)throw new Error('Conversion stopped. Original file kept for retry.');$('progress').hidden=false;$('progress').value=Math.max(0,Math.min(100,value));$('progress').setAttribute('aria-label',message);$('status').textContent=message;}
 function explicitQuestionCount(text){return (String(text).match(/^\s*(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])(?:\s+|$)/gim)||[]).length;}
 let ocrScriptPromise;
 function loadOcrEngine(){
@@ -133,27 +135,31 @@ function loadOcrEngine(){
  return ocrScriptPromise;
 }
 async function ocrPdfPages(pdfjs,pages,report,recognizeScannedPage){
+ const {boundedWork,checkRunning}=await import('./conversion-guards.mjs');
  await loadOcrEngine();
  const root=new URL('./vendor/',location.href).href;
- let worker;const recognized=new Map(),imageQuestions=[];
+ let worker,activeIndex=0,lastLog=0;const recognized=new Map(),imageQuestions=[];
  try{
-  report(0,`Loading English OCR model for ${pages.length} scanned page(s)…`);
+  report(0,`Loading English OCR model for ${pages.length} scanned page(s)… Large scanned banks may take several minutes; you can stop and retry.`);
   worker=await Tesseract.createWorker('eng',1,{
-   workerPath:root+'worker.min.js',corePath:root+'ocr-core',langPath:root+'ocr-lang',workerBlobURL:false
+   workerPath:root+'worker.min.js',corePath:root+'ocr-core',langPath:root+'ocr-lang',workerBlobURL:false,
+   logger:message=>{if(message.status==='recognizing text'&&!conversionController?.signal.aborted&&performance.now()-lastLog>1000){lastLog=performance.now();report(activeIndex/pages.length,`OCR source page ${pages[activeIndex]} · current text region ${Math.round(message.progress*100)}% · ${activeIndex}/${pages.length} pages completed`);}}
   });
   for(let index=0;index<pages.length;index++){
-   const number=pages[index],page=await pdfjs.getPage(number),base=page.getViewport({scale:1});
+   checkRunning(conversionController?.signal);activeIndex=index;
+   const started=performance.now(),number=pages[index],page=await pdfjs.getPage(number),base=page.getViewport({scale:1});
    const scale=Math.min(2.2,2400/Math.max(base.width,base.height));
    const viewport=page.getViewport({scale});
    const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
    try{
     await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
-    const result=await recognizeScannedPage(canvas,worker,number,imageQuestions.at(-1));
+    const result=await boundedWork(()=>recognizeScannedPage(canvas,worker,number,imageQuestions.at(-1)),{signal:conversionController?.signal,onStop:()=>worker.terminate()});
     if(result.kind==='question')imageQuestions.push(result.question);
     else if(result.kind==='feedback'){
      const question=imageQuestions.at(-1);question.answer=result.answer;question.explanation=result.explanation;question.verified=true;
     }else recognized.set(number,result.text||'');
-    report((index+1)/pages.length,`OCR page ${index+1} of ${pages.length} · source page ${number} · ${imageQuestions.length} MCQs found`);
+    const seconds=Math.max(1,Math.round((performance.now()-started)/1000));
+    report((index+1)/pages.length,`OCR page ${index+1} of ${pages.length} · source page ${number} · ${imageQuestions.length} image MCQs + ${[...recognized.values()].reduce((n,text)=>n+explicitQuestionCount(text),0)} numbered candidates · last page ${seconds}s · remaining estimate ${Math.ceil(seconds*(pages.length-index-1)/60)} min`);
    }finally{canvas.width=0;canvas.height=0;page.cleanup?.();}
    await new Promise(resolve=>setTimeout(resolve,0));
   }
@@ -180,7 +186,7 @@ async function readExistingQuiz(file){
  return {doc,questionCount,originalPageCount:doc.getPageCount(),title:doc.getTitle()||stem(file.name)};
 }
 async function extractQuiz(item,report=setProgress){
- const {parseBmj,parseMyPastest,parseStructured,parseVisualOptionBank,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,captureMyPastestFigures,captureVisualFigures,recognizeScannedPage,extractPairedImageBank}=await import('./quiz.mjs?v=20261015e');
+ const {parseBmj,parseMyPastest,parseStructured,parseVisualOptionBank,visualPageLines,textLinesFromItems,inferBmjAnswerColors,captureBmjFigures,captureMyPastestFigures,captureVisualFigures,recognizeScannedPage,extractPairedImageBank}=await import('./quiz.mjs?v=20261015e');
  if(ext(item.file.name)==='pdf'){
   const {getDocument,GlobalWorkerOptions}=await import('./vendor/pdf.mjs');GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.mjs',location.href).href;
   const pdfjs=await getDocument({data:new Uint8Array(await item.file.arrayBuffer()),disableFontFace:true}).promise;
@@ -188,6 +194,7 @@ async function extractQuiz(item,report=setProgress){
    const pages=[];
    for(let p=1;p<=pdfjs.numPages;p++){
     pages.push((await (await pdfjs.getPage(p)).getTextContent()).items);
+    if(conversionController?.signal.aborted)throw new Error('Conversion stopped. Original file kept for retry.');
     if(p%10===0||p===pdfjs.numPages){item.state=`Reading ${p}/${pdfjs.numPages} pages`;report(p/pdfjs.numPages*50,`${item.file.name}: reading page ${p} of ${pdfjs.numPages} (${Math.round(p/pdfjs.numPages*50)}%)`);render();await new Promise(r=>setTimeout(r,0));}
    }
    const pairedPages=pdfjs.numPages%2===0&&pages.every((items,index)=>{
@@ -205,10 +212,22 @@ async function extractQuiz(item,report=setProgress){
     return all;
    }
    const myPastest=parseMyPastest(pages);
-   if(myPastest.length){item.expectedMCQs=new Set(pages.flatMap(items=>items.map(i=>/questionIndex=(\d+)/i.exec(i.str||'')).filter(Boolean).map(m=>m[1]))).size;if(myPastest.length!==item.expectedMCQs)throw new Error(`Source has ${item.expectedMCQs} distinct question indexes, but ${myPastest.length} were extracted.`);item.state='Preserving clinical figures…';render();await captureMyPastestFigures(pdfjs,myPastest,(done,total)=>report(55+done/total*30,`${item.file.name}: checking figures ${done}/${total}`));return myPastest;}
+   if(myPastest.length){
+    const indexes=new Set(pages.flatMap(items=>items.flatMap(i=>[...String(i.str||'').matchAll(/questionIndex=(\d+)/gi)].map(m=>Number(m[1])))));
+    item.expectedMCQs=indexes.size;
+    const extracted=new Set(myPastest.map(q=>Number(q.id.replace('mypastest-',''))));
+    const missing=[...indexes].filter(id=>!extracted.has(id));
+    const missingSet=new Set(missing), locations=new Map(missing.map(id=>[id,[]]));
+    if(missing.length)pages.forEach((items,page)=>{
+     const ids=new Set(items.flatMap(i=>[...String(i.str||'').matchAll(/questionIndex=(\d+)/gi)].map(m=>Number(m[1]))));
+     for(const id of ids)if(missingSet.has(id))locations.get(id).push(page+1);
+    });
+    item.missingQuestions=[...locations];
+    item.state='Preserving clinical figures…';render();await captureMyPastestFigures(pdfjs,myPastest,(done,total)=>report(55+done/total*30,`${item.file.name}: checking figures ${done}/${total}`));return myPastest;
+   }
    const bmj=parseBmj(pages);if(bmj.length){item.expectedMCQs=new Set(pages.flatMap(items=>items.map(i=>/Question\s+(\d+)\s+of\s+(\d+)/i.exec(i.str||'')).filter(Boolean).map(m=>`${m[2]}-${m[1]}`))).size;await inferBmjAnswerColors(pdfjs,bmj,(done,total)=>{item.state=`Checking answer key ${done}/${total}`;report(50+done/total*25,`${item.file.name}: checking answers ${done} of ${total} (${Math.round(50+done/total*25)}%)`);render()});item.state='Preserving question figures…';report(75,`${item.file.name}: preserving question figures (75%)`);render();await captureBmjFigures(pdfjs,bmj,(done,total)=>report(75+done/total*5,`${item.file.name}: preserving figure ${done} of ${total} (${Math.round(75+done/total*5)}%)`));return bmj;}
    const visual=parseVisualOptionBank(pages);
-   if(visual.length){item.state=`Found ${visual.length} questions`;report(55,`${item.file.name}: ${visual.length} questions found; preserving source tables`);render();await captureVisualFigures(pdfjs,visual);return visual;}
+   if(visual.length){const {visualSourceCount}=await import('./conversion-guards.mjs');item.expectedMCQs=visualSourceCount(pages,visualPageLines);item.state=`Found ${visual.length} questions`;report(55,`${item.file.name}: ${visual.length} questions found; preserving source tables`);render();await captureVisualFigures(pdfjs,visual);return visual;}
    const pageTexts=pages.map(items=>textLinesFromItems(items).join('\n'));
    let questions=parseStructured(pageTexts.join('\n'));
    // Image-only banks often include selectable headers and page numbers (~80 characters).
@@ -223,12 +242,13 @@ async function extractQuiz(item,report=setProgress){
    for(const [number,text] of recognized)pageTexts[number-1]=text;
    questions=[...parseStructured(pageTexts.join('\n')),...imageQuestions];
    if(!questions.length){item.skipReason=`OCR read ${scanned.length} page(s); no MCQs recognized`;return [];}
+   item.expectedMCQs=explicitQuestionCount(pageTexts.join('\n'))+imageQuestions.length;
    return questions;
   }finally{await pdfjs.destroy()}
  }
  if(['png','jpg','jpeg','webp','bmp','gif'].includes(ext(item.file.name))){
   await loadOcrEngine();const root=new URL('./vendor/',location.href).href;
-  let worker;try{report(10,`${item.file.name}: loading OCR model`);worker=await Tesseract.createWorker('eng',1,{workerPath:root+'worker.min.js',corePath:root+'ocr-core',langPath:root+'ocr-lang',workerBlobURL:false});const {data}=await worker.recognize(await rasterImage(item.file));report(80,`${item.file.name}: OCR complete`);return parseStructured(data.text||'');}finally{await worker?.terminate();}
+  let worker;try{report(10,`${item.file.name}: loading OCR model`);worker=await Tesseract.createWorker('eng',1,{workerPath:root+'worker.min.js',corePath:root+'ocr-core',langPath:root+'ocr-lang',workerBlobURL:false});const {data}=await worker.recognize(await rasterImage(item.file));report(80,`${item.file.name}: OCR complete`);item.expectedMCQs=explicitQuestionCount(data.text||'');return parseStructured(data.text||'');}finally{await worker?.terminate();}
  }
  const blocks=await contentBlocks(item.file),text=blocks.map(b=>b.text||'').join('\n');
  item.expectedMCQs=explicitQuestionCount(text);
@@ -236,13 +256,14 @@ async function extractQuiz(item,report=setProgress){
 }
 async function convert(retryItems=null){
  const activeQueue=Array.isArray(retryItems)?retryItems:queue;
- if(busy||collecting)return;busy=true;downloadChain=Promise.resolve();$('downloadStatus').textContent='';if(!Array.isArray(retryItems)){outputs.forEach(o=>URL.revokeObjectURL(o.url));outputs=[];}showOutputs();render();
+ if(busy||collecting)return;busy=true;conversionController=new AbortController();downloadChain=Promise.resolve();$('downloadStatus').textContent='';if(!Array.isArray(retryItems)){outputs.forEach(o=>URL.revokeObjectURL(o.url));outputs=[];}showOutputs();render();
  const candidates=activeQueue.filter(i=>!i.unsupported),quiz=$('quizMode').checked;
  const opts={index:$('index').checked,notes:$('notes').checked,checks:$('checks').checked,mcqs:$('mcqs').checked};
  if(document.querySelector('input[name="format"]:checked').value==='study'){
   const {buildStudyPdf}=await import('./study.mjs?v=20261016a');let done=0,failed=0;
   try{
    for(const item of activeQueue){
+    if(conversionController?.signal.aborted)break;
     if(item.unsupported){item.failureMode=document.querySelector('input[name="format"]:checked').value;item.error=null;item.state='Skipped · unsupported format';done++;render();continue}
     item.failureMode=document.querySelector('input[name="format"]:checked').value;item.error=null;item.state='Formatting notes…';render();
     try{
@@ -255,7 +276,7 @@ async function convert(retryItems=null){
      registerOutput({...result,bytes:undefined,study:true,sourceItem:item,blob,url:URL.createObjectURL(blob),name});
      item.state=`Ready · ${result.notesPages} styled pages${result.sourcePages?` + ${result.sourcePages} original pages`:''}`;
     }catch(e){item.error=e.message||'Could not format these notes';failed++}
-    done++;setProgress(done/activeQueue.length*100,`${done}/${activeQueue.length} checked · ${outputs.length} notes PDFs ready · ${failed} failed`);
+    done++;if(!conversionController?.signal.aborted)setProgress(done/activeQueue.length*100,`${done}/${activeQueue.length} checked · ${outputs.length} notes PDFs ready · ${failed} failed`);
     render();showOutputs();await new Promise(resolve=>setTimeout(resolve,0));
    }
   }finally{showOutputs();await finishDownloads();busy=false;render();showOutputs();if(outputs.length)$('results').scrollIntoView?.({behavior:'smooth'})}
@@ -265,8 +286,9 @@ async function convert(retryItems=null){
   const {buildQuizPdf}=await import('./quiz.mjs?v=20261015e');let done=0,skipped=0,failed=0;
   try{
    for(const item of activeQueue){
+    if(conversionController?.signal.aborted)break;
     if(item.unsupported){item.failureMode=document.querySelector('input[name="format"]:checked').value;item.error=null;item.state='Skipped · unsupported format';skipped++;done++;render();continue;}
-    item.failureMode='quiz';item.error=null;item.expectedMCQs=null;item.state='Analyzing…';render();
+    item.failureMode='quiz';item.error=null;item.expectedMCQs=null;item.missingQuestions=[];item.state='Analyzing…';render();
     try{
      const previous=await readExistingQuiz(item.file);
      if(previous&&previous.originalPageCount!==previous.questionCount*6){
@@ -285,21 +307,32 @@ async function convert(retryItems=null){
       item.expectedMCQs=previous.questionCount;
      }else item.questions=await extractQuiz(item,(value,message)=>setProgress((done+value/100)/activeQueue.length*90,`${item.file.name}: ${message}`));
      if(!item.questions.length){item.state=`Skipped · ${item.skipReason||'no MCQs found'}`;skipped++;}
-     else if(!Number.isInteger(item.expectedMCQs)||item.expectedMCQs<1)throw new Error('Source MCQ count cannot be verified for this layout. No incomplete PDF was exported.');
-     else if(item.questions.length!==item.expectedMCQs)throw new Error(`Source has ${item.expectedMCQs} MCQs, but ${item.questions.length} were extracted. Incomplete PDF blocked.`);
      else {
-      item.state=`Building ${item.expectedMCQs} questions…`;render();
+      const extracted=item.questions.length;
+      const expected=Number.isInteger(item.expectedMCQs)&&item.expectedMCQs>0?item.expectedMCQs:null;
+      const partial=expected!==extracted||item.missingQuestions.length>0;
+      item.state=`Building ${extracted} questions…`;render();
       const title=$('title').value.trim()||previous?.title||stem(item.file.name);
       const result=await buildQuizPdf(item.questions,title,(current,total)=>setProgress((done+.75+current/total*.2)/activeQueue.length*100,`${item.file.name}: building ${current}/${total}`));
-      if(result.mcqs!==item.expectedMCQs)throw new Error('Output MCQ count mismatch. Incomplete PDF blocked.');
+      if(result.mcqs!==extracted)throw new Error('Output count does not match the extracted questions.');
       const blob=new Blob([result.bytes],{type:'application/pdf'});let name=previous?stem(item.file.name).replace(/-quiz$/i,'')+'-updated-quiz.pdf':stem(item.file.name)+'-quiz.pdf';
-      if(outputs.some(o=>o.name===name))name=stem(item.file.name)+`-${done+1}-quiz.pdf`;
-      registerOutput({...result,quiz:true,sourceItem:item,blob,url:URL.createObjectURL(blob),name,bytes:undefined});
-      item.state=`Ready · ${result.mcqs}/${item.expectedMCQs} MCQs · ${result.pages} pages`;
+      if(partial)name=name.replace(/\.pdf$/i,'-partial.pdf');
+      const base=name.slice(0,-4);
+      for(let suffix=2;outputs.some(o=>o.name===name);suffix++)name=`${base}-${suffix}.pdf`;
+      const reportText=partial?[
+       'Missing questions / conversion report',`Source: ${filePath(item.file)}`,`Quiz PDF: ${name}`,
+       `Questions exported: ${extracted}`,`Source question count: ${expected??'not verified'}`,
+       expected!==null&&expected>extracted?`Count shortfall: ${expected-extracted}`:'',
+       '',...(item.missingQuestions.length?item.missingQuestions.map(([id,pages])=>`Question index ${id} — source PDF page(s) ${pages.join(', ')||'unknown'}`):
+        ['Missing question indexes could not be identified reliably for this layout.']),
+       '', 'The quiz contains the extracted questions only. Missing questions and answers were not invented.'
+      ].filter((line,i)=>line||i>4).join('\n'):null;
+      registerOutput({...result,quiz:true,sourceItem:item,blob,url:URL.createObjectURL(blob),name,reportText,bytes:undefined});
+      item.state=partial?`Partial quiz ready · ${extracted}${expected!==null?'/'+expected:''} MCQs · see missing report`:`Ready · ${result.mcqs}/${expected} MCQs · ${result.pages} pages`;
      }
      }
     }catch(e){item.error=e.message||'Could not verify this question bank';failed++;}
-    done++;setProgress(done/activeQueue.length*100,`${done}/${activeQueue.length} files checked · ${outputs.length} ready · ${failed} failed · ${skipped} skipped`);
+    done++;if(!conversionController?.signal.aborted)setProgress(done/activeQueue.length*100,`${done}/${activeQueue.length} files checked · ${outputs.length} ready · ${failed} failed · ${skipped} skipped`);
     render();showOutputs();await new Promise(resolve=>setTimeout(resolve,0));
    }
   }finally{showOutputs();await finishDownloads();busy=false;render();showOutputs();if(outputs.length)$('results').scrollIntoView?.({behavior:'smooth'});}
@@ -387,7 +420,8 @@ async function convert(retryItems=null){
  await finishDownloads();busy=false;render();$('status').textContent=`${outputs.length} of ${candidates.length} converted.${candidates.length>outputs.length?' See the file queue for errors.':''}`;
  if(outputs.length)$('results').scrollIntoView?.({behavior:'smooth'});
 }
-$('convert').onclick=convert;$('zip').onclick=async()=>{if(!outputs.length)return;$('zip').disabled=true;$('zip').textContent='Preparing ZIP…';try{const zip=new JSZip();for(const o of outputs)zip.file(o.name,await o.blob.arrayBuffer());const blob=await zip.generateAsync({type:'blob',compression:'STORE'});const a=document.createElement('a');const url=URL.createObjectURL(blob);a.href=url;a.download='Interactive-PDFs.zip';a.click();setTimeout(()=>URL.revokeObjectURL(url),60000)}catch(e){$('status').textContent='ZIP could not be created. Download the PDFs individually.'}finally{$('zip').disabled=false;$('zip').textContent='Download all as ZIP'}};
+$('stopConversion').onclick=()=>{conversionController?.abort();$('status').textContent='Stopping conversion… Completed downloads are kept. Remaining files stay in the queue.';$('stopConversion').disabled=true;};
+$('convert').onclick=convert;$('zip').onclick=async()=>{if(!outputs.length)return;$('zip').disabled=true;$('zip').textContent='Preparing ZIP…';try{const zip=new JSZip();for(const o of outputs){zip.file(o.name,await o.blob.arrayBuffer());if(o.reportText)zip.file(o.name.replace(/\.pdf$/i,'-missing.txt'),o.reportText);}const blob=await zip.generateAsync({type:'blob',compression:'STORE'});const a=document.createElement('a');const url=URL.createObjectURL(blob);a.href=url;a.download='Interactive-PDFs.zip';a.click();setTimeout(()=>URL.revokeObjectURL(url),60000)}catch(e){$('status').textContent='ZIP could not be created. Download the PDFs individually.'}finally{$('zip').disabled=false;$('zip').textContent='Download all as ZIP'}};
 let combinedUrl=null;
 $('combineFiles').onchange=()=>{$('combineDownloaded').disabled=$('combineFiles').files.length<2;$('combineStatus').textContent=$('combineFiles').files.length?`${$('combineFiles').files.length} PDFs selected. Their selection order will be used.`:'';$('combineDownload').hidden=true;};
 $('combineDownloaded').onclick=async()=>{
@@ -440,7 +474,7 @@ window.addEventListener('pdf-retry-failed',async event=>{
     if(!item){item={file,unsupported:!allowed.has(ext(file.name))};queue.push(item)}else item.file=file;
     retryItems.push(item);
    }
-   const option=document.querySelector(`input[name="format"][value="${mode}"]`);if(!option)continue;option.checked=true;
+   const option=document.querySelector('input[name="format"][value="quiz"]');option.checked=true;
    render();await convert(retryItems);
   }
  }finally{document.querySelector(`input[name="format"][value="${originalFormat}"]`).checked=true;render();complete();}

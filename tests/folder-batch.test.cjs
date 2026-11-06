@@ -11,6 +11,18 @@ function app(){
  return {w,dom,downloads};
 }
 const fileEntry=(name,file)=>({name,isFile:true,file:success=>success(file)});
+test('partial extraction exports a quiz and a separate report identifying the missing source question',async()=>{
+ const {w,dom}=app();try{
+  w.document.getElementById('autoDownload').checked=false;
+  w.__quizModule={buildQuizPdf:async q=>({bytes:new Uint8Array([1]),pages:2,mcqs:q.length})};
+  w.eval("readExistingQuiz=async()=>null;extractQuiz=async item=>{item.expectedMCQs=2;item.missingQuestions=[[319,[12,13]]];return [{stem:'Question',options:['A','B'],answer:0}]}");
+  w.add([new File(['pdf'],'cardiology.pdf')]);await w.convert();
+  assert.equal(w.__state().outputs[0].name,'cardiology-quiz-partial.pdf');
+  const report=w.document.querySelector('a[download$="-missing.txt"]');
+  assert.match(decodeURIComponent(report.href),/Question index 319.*12, 13/);
+  assert.match(w.document.getElementById('queue').textContent,/1\/2 MCQs/);
+ }finally{dom.window.close()}
+});
 function folder(name,entries){return {name,isDirectory:true,createReader(){let offset=0;return {readEntries(success){const batch=entries.slice(offset,offset+100);offset+=100;success(batch)}}}}}
 test('drop traverses every directory-reader batch, nested folders and unreadable siblings',async()=>{
  const {w,dom}=app();try{
@@ -59,4 +71,13 @@ test('retry processes only saved failures and retains successful PDF downloads',
   for(let i=0;i<100;i++){await new Promise(resolve=>setTimeout(resolve,10));if(w.__state().outputs.length===2&&!w.__state().busy)break}
   await panel.idle();assert.equal(w.__state().outputs.length,2);assert.equal(panel.records().length,0);assert.equal((await store.list()).length,0);assert.equal(w.__state().outputs[0].name,'safe-quiz.pdf');
  }finally{panel?.destroy();dom.window.close();await store.close()}
+});
+test('stopping a batch retains completed downloads and leaves remaining files queued',async()=>{
+ const {w,dom}=app();try{
+ w.__quizModule={buildQuizPdf:async questions=>({bytes:new Uint8Array([1]),pages:2,mcqs:questions.length})};
+ let entered;const started=new Promise(resolve=>entered=resolve);w.__entered=entered;
+ w.eval("readExistingQuiz=async()=>null;extractQuiz=async item=>{if(item.file.name==='slow.txt'){__entered();await new Promise((resolve,reject)=>{const timer=setInterval(()=>{if(document.getElementById('stopConversion').disabled){clearInterval(timer);reject(Error('Conversion stopped. Original file kept for retry.'))}},2)});}item.expectedMCQs=1;return [{stem:'Source question',options:['A','B'],answer:0,explanation:'Original explanation'}]}");
+ w.add(['ready','slow','pending'].map(name=>new File(['question'],name+'.txt')));const conversion=w.convert();await started;w.document.getElementById('stopConversion').click();await conversion;
+ const state=w.__state();assert.equal(state.busy,false);assert.equal(state.outputs.length,1);assert.equal(state.queue[2].questions,undefined);assert.match(state.queue[1].error,/stopped/);assert.equal(w.document.getElementById('stopConversion').hidden,true);
+ }finally{dom.window.close()}
 });

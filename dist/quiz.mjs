@@ -1,3 +1,4 @@
+import {compactSourceImage} from './conversion-guards.mjs';
 // A clean question bank is built from source text, never by covering printed answers.
 const letters = 'ABCDE';
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
@@ -175,7 +176,7 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
     };
     const question=await capture(number),answer=await capture(number+1);
     try{
-      const qImage=question.crop.toDataURL('image/png');
+      const qImage=compactSourceImage(question.crop);
       const {group,rows}=answer.found;
       const correct=group?.findIndex(row=>row.kind==='green')??-1;
       const greenRows=rows.filter(row=>row.kind==='green');
@@ -244,7 +245,7 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
         }
         const slice=document.createElement('canvas');slice.width=trimmed.width;slice.height=end-start;
         slice.getContext('2d').drawImage(trimmed,0,start,trimmed.width,slice.height,0,0,trimmed.width,slice.height);
-        answerPages.push(slice.toDataURL('image/png'));slice.width=slice.height=0;start=end;
+        answerPages.push(compactSourceImage(slice));slice.width=slice.height=0;start=end;
       }
       questions.push({id:`paired-${number}`,stem:`Source question ${(number+1)/2}`,options:['A','B','C','D','E'],
         answer:correct>=0?correct:null,explanation:'',sourcePage:number,verified:correct>=0,
@@ -493,7 +494,7 @@ export function parseMyPastest(pages) {
     const text=pages[i].map(x=>x.str||'').join(' ');
     if(!/MyPastest/i.test(text)||!/questionIndex=\d+/.test(text))continue;
     const id=Number(/questionIndex=(\d+)/.exec(text)[1]);
-    const hasFeedback=pages[i].some(x=>/Your answer was (?:correct|incorrect)/i.test(x.str||''));
+    const hasFeedback=/Your\s+answer\s+was\s+(?:correct|incorrect)/i.test(text);
     if(hasFeedback&&!seen.has(id)){starts.push({id,page:i});seen.add(id);}
   }
   if(!starts.length)return [];
@@ -508,18 +509,24 @@ export function parseMyPastest(pages) {
   const ignored=/^(?:MyPastest|Your answer was|Explanation$|Chat with AI Tutor|Next Question|Previous Question|Tag Question|Feedback|End Session|Rate this question|Diff\s*ficulty:|Peer Responses|Show More Questions|Session Progress|Responses |External Links|https?:|\d+\/\d+\/\d+|\d+\/\d+$)/i;
   return starts.map((entry,index)=>{
     const first=toRows(pages[entry.page]);
-    const ex=first.find(r=>/^Explanation$/.test(r.text));
-    const answerMessage=first.find(r=>/^Your answer was/.test(r.text));
-    if(!ex||!answerMessage)return null;
-    const labels=first.filter(r=>r.y<answerMessage.y&&r.y>ex.y&&r.x>=45&&r.x<65&&/^[A-E](?:\s|$)/.test(r.text)).slice(0,5);
+    const end=starts[index+1]?.page??pages.length;
+    const explanationHeading=/^Explanation\s*:?$/i;
+    const ex=first.find(r=>explanationHeading.test(r.text));
+    const answerMessage=first.find(r=>/^Your\s+answer\s+was/i.test(r.text));
+    if(!answerMessage)return null;
+    // Some printed reviews put the explanation heading on the continuation page.
+    const continuation=!ex&&entry.page+1<end?toRows(pages[entry.page+1]):[];
+    const continuationHeading=continuation.findIndex(r=>explanationHeading.test(r.text));
+    if(!ex&&continuationHeading<0)return null;
+    const boundary=ex?.y??38;
+    const labels=first.filter(r=>r.y<answerMessage.y&&r.y>boundary&&r.x>=45&&r.x<65&&/^[A-E](?:\s|$)/.test(r.text)).slice(0,5);
     if(labels.length<2||labels.some((r,i)=>r.text[0]!==letters[i]))return null;
     const stem=first.filter(r=>r.y>answerMessage.y+14&&r.x<45&&!ignored.test(r.text)).map(r=>r.text).join(' ').trim();
-    const options=labels.map((label,i)=>first.filter(r=>r.y<=label.y+2&&r.y>(labels[i+1]?.y??ex.y)+2&&r.x>=45&&r.x<530).map(r=>r.text.replace(/^[A-E]\s+(?=\S)/,'')).join(' ').trim());
-    const feedbackRows=first.filter(r=>r.y<ex.y-4&&r.y>38&&!ignored.test(r.text));
+    const options=labels.map((label,i)=>first.filter(r=>r.y<=label.y+2&&r.y>(labels[i+1]?.y??boundary)+2&&r.x>=45&&r.x<530&&!ignored.test(r.text)).map(r=>r.text.replace(/^[A-E]\s+(?=\S)/,'')).join(' ').trim());
+    const feedbackRows=ex?first.filter(r=>r.y<ex.y-4&&r.y>38&&!ignored.test(r.text)):continuation.slice(continuationHeading+1).filter(r=>r.y>38&&r.x<400&&!ignored.test(r.text));
     let answer=null;
     for(const row of feedbackRows){if(row.x>=45&&row.x<65&&/^[A-E](?:\s|$)/.test(row.text)){answer=letters.indexOf(row.text[0]);break;}}
-    const end=starts[index+1]?.page??pages.length;
-    for(let p=entry.page+1;p<end;p++){
+    for(let p=entry.page+(ex?1:2);p<end;p++){
       if(pages[p].some(x=>/Your answer was (?:correct|incorrect)/i.test(x.str||'')))break;
       feedbackRows.push(...toRows(pages[p]).filter(r=>r.y>38&&r.x<400&&!ignored.test(r.text)));
     }
@@ -593,7 +600,8 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
   const totalQuestions=startNumber+questions.length;
   const doc = existing?.doc||await PDFDocument.create(), regular = await doc.embedFont(StandardFonts.Helvetica), bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const ink = rgb(.11,.17,.27), green = rgb(.08,.47,.28), red = rgb(.74,.15,.17), amber = rgb(.52,.36,.09), blue = rgb(.15,.32,.75), grey = rgb(.39,.45,.54);
-  const questionPages = [], lastAnswerPages=[];
+  const questionPages = [], lastAnswerPages=[],embeddedImages=new Map();
+  const embedImage=data=>{if(!embeddedImages.has(data))embeddedImages.set(data,data.startsWith('data:image/png')?doc.embedPng(data):doc.embedJpg(data));return embeddedImages.get(data);};
   const heading = ascii(title.trim().replace(/_/g,' ') || 'MCQ Question Bank');
   const header = (page, label, color) => {
     page.drawRectangle({x:0,y:794,width:595,height:48,color});
@@ -609,7 +617,7 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
     header(page,`QUESTION ${number} / ${totalQuestions}`,blue);
     const questionStart=page;
     if(q.imageQuestionData){
-      const picture=await (q.imageQuestionData.startsWith('data:image/png')?doc.embedPng(q.imageQuestionData):doc.embedJpg(q.imageQuestionData));
+      const picture=await embedImage(q.imageQuestionData);
       const ratio=Math.min(510/picture.width,655/picture.height);
       const width=picture.width*ratio,height=picture.height*ratio;
       const left=42,top=750,bottom=top-height;
@@ -626,7 +634,7 @@ export async function buildQuizPdf(questions, title, onProgress=()=>{}, existing
       const answerData=q.imageAnswerPagesData||[q.imageAnswerData];
       for(let part=0;part<answerData.length;part++){
         if(part){result=doc.addPage([595,842]);header(result,`ANSWER & EXPLANATION · QUESTION ${number} · CONTINUED`,green);}
-        const data=answerData[part],answerImage=await (data.startsWith('data:image/png')?doc.embedPng(data):doc.embedJpg(data));
+        const data=answerData[part],answerImage=await embedImage(data);
         const answerRatio=Math.min(510/answerImage.width,665/answerImage.height);
         result.drawImage(answerImage,{x:42,y:750-answerImage.height*answerRatio,width:answerImage.width*answerRatio,height:answerImage.height*answerRatio});
       }

@@ -55,8 +55,9 @@ w.eval(app+';globalThis.__getOutputs=()=>outputs;');
  w.document.getElementById('clear').click();
  w.add([new File(['Q1. Incomplete?\nA. Yes\nB. No'],'mismatch.txt'),new File(['Q1. Safe?\nA. Yes\nB. No'],'safe.txt')]);
  await w.convert();
- assert.equal(w.__getOutputs().length,1);
- assert(w.document.getElementById('queue').textContent.includes('Incomplete PDF blocked'));
+ assert.equal(w.__getOutputs().length,2);
+ assert.match(w.__getOutputs()[0].reportText,/Count shortfall: 1/);
+ assert(w.document.getElementById('queue').textContent.includes('Partial quiz ready'));
  w.document.getElementById('clear').click();
  w.document.getElementById('combineMode').checked=true;
  w.add([
