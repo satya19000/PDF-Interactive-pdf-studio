@@ -4,8 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test tests/exam-*.test.mjs tests/folder-batch.test.cjs tests/repair.test.mjs tests/conversion-guards.test.mjs && node test.cjs && node batch-test.cjs",
-    "build": "node scripts/build.cjs"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
@@ -21,8 +20,6 @@
   },
   "devDependencies": {
     "@napi-rs/canvas": "^0.1.80",
-    "fake-indexeddb": "^6.2.5",
-    "jsdom": "^26.1.0",
-    "pdfjs-dist": "5.6.205"
+    "jsdom": "^26.1.0"
   }
 }

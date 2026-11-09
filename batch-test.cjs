@@ -1,9 +1,8 @@
-const qaPath=require('fs').mkdtempSync(require('path').join(require('os').tmpdir(),'pdf-studio-test-'));
 const fs=require('fs');
 const assert=require('assert');
 const {JSDOM}=require('jsdom');
 const dom=new JSDOM(fs.readFileSync('dist/index.html','utf8'),{runScripts:'outside-only',url:'https://example.test/'});
-const w=dom.window;w.HTMLAnchorElement.prototype.click=function(){};
+const w=dom.window;
 w.Blob=Blob;w.File=File;w.URL.createObjectURL=()=> 'blob:test';w.URL.revokeObjectURL=()=>{};
 w.HTMLElement.prototype.scrollIntoView=()=>{};
 w.eval(fs.readFileSync('dist/vendor/pdf-lib.min.js','utf8'));
@@ -55,9 +54,8 @@ w.eval(app+';globalThis.__getOutputs=()=>outputs;');
  w.document.getElementById('clear').click();
  w.add([new File(['Q1. Incomplete?\nA. Yes\nB. No'],'mismatch.txt'),new File(['Q1. Safe?\nA. Yes\nB. No'],'safe.txt')]);
  await w.convert();
- assert.equal(w.__getOutputs().length,2);
- assert.match(w.__getOutputs()[0].reportText,/Count shortfall: 1/);
- assert(w.document.getElementById('queue').textContent.includes('Partial quiz ready'));
+ assert.equal(w.__getOutputs().length,1);
+ assert(w.document.getElementById('queue').textContent.includes('Incomplete PDF blocked'));
  w.document.getElementById('clear').click();
  w.document.getElementById('combineMode').checked=true;
  w.add([
@@ -84,7 +82,7 @@ w.eval(app+';globalThis.__getOutputs=()=>outputs;');
  assert.equal(continued.getPage(0).getWidth(),892.5);
  assert.equal(continued.getPage(base.pages).getWidth(),892.5);
  assert(w.document.getElementById('status').textContent.includes('1 existing + 1 new'));
- fs.writeFileSync(require('path').join(qaPath,'continued-quiz.pdf'),Buffer.from(await w.__getOutputs()[0].blob.arrayBuffer()));
+ fs.writeFileSync('/workspace/scratch/d84423f2b585/qa/continued-quiz.pdf',Buffer.from(await w.__getOutputs()[0].blob.arrayBuffer()));
  const third=await quiz.buildQuizPdf(quiz.parseStructured('Q1. Third question?\nA. Yes\nB. No\nAnswer: A'),'Combined subject',()=>{},
   {doc:continued,questionCount:2,originalPageCount:continued.getPageCount()});
  const again=await globalThis.PDFLib.PDFDocument.load(third.bytes);
