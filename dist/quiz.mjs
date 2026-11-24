@@ -175,6 +175,8 @@ export async function extractPairedImageBank(pdfjs,onProgress=()=>{}) {
     };
     const question=await capture(number),answer=await capture(number+1);
     try{
+      if(question.found.group?.length!==5||answer.found.group?.length!==5)
+        throw new Error('Source pages '+number+'-'+(number+1)+': could not verify five question and answer option rows. Pairing was not assumed from page numbers alone.');
       const qImage=question.crop.toDataURL('image/png');
       const {group,rows}=answer.found;
       const correct=group?.findIndex(row=>row.kind==='green')??-1;
@@ -314,33 +316,87 @@ export async function recognizeScannedPage(canvas,worker,sourcePage,previousQues
   }finally{crop.width=0;crop.height=0;}
 }
 
+const numberedStart = /^[ \t]*(?:Q(?:uestion)?[ \t]*[-.:#]?[ \t]*(\d+)[.)]?|(\d+)[.)])(?=[ \t]|$)/gim;
+const answerKeyStart = /^[ \t]*answer[ \t]+key\b[ \t]*[:–—-]?[ \t]*|\s+answer[ \t]+key[ \t]*[:–—-]?[ \t]*(?=\d+[ \t]*[-.:)=–—])/im;
+function splitAnswerKey(text) {
+  const input=String(text).replace(/\r\n?/g,'\n');
+  const heading=answerKeyStart.exec(input);
+  if(!heading)return [input,new Map()];
+  const key=new Map();
+  for(const [,number,letter] of input.slice(heading.index+heading[0].length).matchAll(/(?:^|[\s,;|])(\d+)[ \t]*[-.:)=–—][ \t]*\(?([A-E])\)?(?=$|[\s,;|.)])/gi)){
+    const n=Number(number),a=letters.indexOf(letter.toUpperCase());
+    key.set(n,key.has(n)&&key.get(n)!==a?null:a);
+  }
+  return [input.slice(0,heading.index),key];
+}
+
+export function hasStructuredAnswerKey(text) {
+  return answerKeyStart.test(String(text).replace(/\r\n?/g,'\n'));
+}
+
+export function structuredQuestionCount(text) {
+  return [...splitAnswerKey(text)[0].matchAll(numberedStart)].length;
+}
+
+export function structuredSpreadsheet(rows) {
+  const name=value=>String(value??'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const header=rows.findIndex(row=>row.some(c=>['question','questiontext','stem'].includes(name(c)))&&
+    row.some(c=>['a','optiona','choicea'].includes(name(c))));
+  if(header<0)return '';
+  const heads=rows[header].map(name);
+  const find=(...names)=>heads.findIndex(h=>names.includes(h));
+  const question=find('question','questiontext','stem'),answer=find('answer','ans','correctanswer','answerkey'),explanation=find('explanation','rationale','discussion');
+  const options=[...letters].map(l=>find(l.toLowerCase(),'option'+l.toLowerCase(),'choice'+l.toLowerCase()));
+  const cell=(row,i)=>String(row[i]??'').trim().replace(/\s+/g,' ');
+  return rows.slice(header+1).filter(row=>row.some(c=>String(c??'').trim())).map((row,i)=>[
+    (i+1)+'. '+cell(row,question),
+    ...options.flatMap((col,j)=>col>=0&&cell(row,col)?[letters[j]+'. '+cell(row,col)]:[]),
+    ...(cell(row,answer)?['Answer: '+cell(row,answer)]:[]),
+    ...(cell(row,explanation)?['Explanation: '+cell(row,explanation)]:[])
+  ].join('\n')).join('\n');
+}
+
 export function parseStructured(text) {
   const questions = [];
-  const questionStart = /^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])(?:\s+|$)/i;
-  const chunks = String(text).split(/(?=^\s*(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])(?:\s+|$))/gim);
-  for (const chunk of chunks) {
-    const lines = chunk.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-    if (/^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])$/i.test(lines[0] || '') && lines[1]) lines.splice(0,2,lines[0]+' '+lines[1]);
-    if (!questionStart.test(lines[0] || '')) continue;
+  const [body,key]=splitAnswerKey(text);
+  const starts=[...body.matchAll(numberedStart)];
+  const indexCounts=new Map();
+  for(const m of starts){const n=Number(m[1]??m[2]);indexCounts.set(n,(indexCounts.get(n)||0)+1);}
+  for (let i=0;i<starts.length;i++) {
+    const start=starts[i], number=Number(start[1]??start[2]);
+    const raw=body.slice(start.index+start[0].length,starts[i+1]?.index);
+    const lines=raw.split('\n').flatMap(line=>{
+      if(/^\s*(?:(?:correct\s+)?ans(?:wer)?|explanation|discussion|rationale)\b/i.test(line))return [line];
+      const markers=[...line.matchAll(/(?:^|[ \t])(?:\(([A-E])\)|([A-E])[.)])[ \t]+/gi)];
+      if(markers.length<2||markers.some((m,j)=>j>0&&m[1]?.toUpperCase()===markers[j-1][1]?.toUpperCase()&&m[2]?.toUpperCase()===markers[j-1][2]?.toUpperCase()))return [line];
+      return [line.slice(0,markers[0].index),...markers.map((m,j)=>line.slice(m.index,markers[j+1]?.index))];
+    }).map(x=>x.trim()).filter(Boolean);
     const options = [], stem = [], explanation = [];
-    let answer = null, answerText = '', inExplanation = false, afterAnswer = false;
-    stem.push(lines[0].replace(/^(?:Q(?:uestion)?\s*[-.:#]?\s*\d+[.)]?|\d+[.)])\s*/i,''));
-    for (const line of lines.slice(1)) {
-      const a = /^(?:correct\s+)?answer\s*[:\-]\s*(.*)$/i.exec(line);
+    let answer = null, answerText = '', inExplanation = false, afterAnswer = false, invalidOptions=false;
+    for (const line of lines) {
+      const a = /^(?:correct\s+)?ans(?:wer)?\s*[:\-]\s*(.*)$/i.exec(line);
       if (a) { answerText=a[1].trim();afterAnswer=true;inExplanation=false;continue; }
       if (/^(?:explanation|discussion|rationale)\s*[:\-]?/i.test(line)) { inExplanation = true; explanation.push(line.replace(/^(?:explanation|discussion|rationale)\s*[:\-]?\s*/i, '')); continue; }
       if (afterAnswer && !inExplanation) {answerText+=(answerText?' ':'')+line;continue;}
-      const o = /^([A-E])[.)]\s+(.+)/i.exec(line);
-      if (o && !inExplanation && options.length < 5) { options.push(clean(o[2])); continue; }
+      const o = /^(?:\(([A-E])\)|([A-E])[.)])\s+(.+)/i.exec(line);
+      if (o && !inExplanation) {
+        if((o[1]??o[2]).toUpperCase()!==letters[options.length])invalidOptions=true;
+        options.push(clean(o[3]));continue;
+      }
       if (inExplanation) explanation.push(line);
       else if (options.length) options[options.length - 1] += ' ' + line;
       else stem.push(line);
     }
-    const answerLetter=/^([A-E])(?:\b|[.)])/i.exec(answerText);
-    if(answerLetter)answer=letters.indexOf(answerLetter[1].toUpperCase());
+    const answerLetter=/^(?:\(([A-E])\)|([A-E])(?:[.)](?=\s|$)|$))/i.exec(answerText);
+    if(answerLetter)answer=letters.indexOf((answerLetter[1]??answerLetter[2]).toUpperCase());
     else if(answerText){const exact=options.map(norm).findIndex(value=>value===norm(answerText));if(exact>=0)answer=exact;}
-    if (options.length >= 2 && clean(stem.join(' '))) {
-      questions.push({ id: `structured-${questions.length + 1}`, stem: clean(stem.join(' ')), options, answer: Number.isInteger(answer)&&answer<options.length?answer:null, explanation: clean(explanation.join(' ')), sourcePage: null, verified:Number.isInteger(answer) });
+    if(indexCounts.get(number)===1&&key.has(number)){
+      const keyed=key.get(number);
+      answer=answer===null?keyed:answer===keyed?answer:null;
+    }
+    if(!Number.isInteger(answer)||answer>=options.length)answer=null;
+    if (!invalidOptions && options.length >= 2 && clean(stem.join(' '))) {
+      questions.push({ id: 'structured-'+(questions.length + 1), stem: clean(stem.join(' ')), options, answer, explanation: clean(explanation.join(' ')), sourcePage: null, verified:answer!==null });
     }
   }
   return questions;
