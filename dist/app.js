@@ -81,6 +81,7 @@ function render() {
     $('queue').append(row);
   }
   $('convert').disabled = busy || !queue.length;
+  $('convert').textContent = busy ? 'Converting files automatically…' : queue.length ? `Convert all ${pluralFiles(queue.length)}` : 'Convert all files';
   $('cancel').hidden = !busy;
   $('cancel').disabled = cancelRequested;
   $('clear').disabled = busy || !queue.length;

@@ -70,7 +70,8 @@
           </ul>
         </div>
         <div class="action-row">
-          <button id="convert" class="primary" disabled>Convert to interactive PDFs <span>&darr;</span></button>
+          <button id="convert" class="primary" disabled>Convert all files</button>
+          <p class="hint">Click once to convert every queued file automatically, one after another. You do not need to click each file separately. Keep this tab open until the batch finishes.</p>
           <button id="cancel" class="secondary" hidden>Cancel</button>
         </div>
         <div id="status" role="status" aria-live="polite">Add a file to get started.</div>
@@ -131,6 +132,6 @@
   <script src="vendor/jszip.min.js"></script>
   <script src="vendor/mammoth.browser.min.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
-  <script src="app.js?v=20261128-pairs"></script>
+  <script src="app.js?v=20261128-convertall"></script>
 </body>
 </html>

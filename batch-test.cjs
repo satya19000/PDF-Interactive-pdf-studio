@@ -47,6 +47,7 @@ w.eval(app + ';globalThis.__getOutputs=()=>outputs;globalThis.__getQueue=()=>que
   Object.defineProperty(folderB, 'webkitRelativePath', { value: 'Subject/B/same.txt' });
   w.add([folderA, folderB]);
   assert.equal(w.document.querySelectorAll('#queue .file').length, 2);
+  assert.equal(w.document.getElementById('convert').textContent, 'Convert all 2 files');
   assert(w.document.getElementById('queue').textContent.includes('Subject/B/same.txt'));
 
   // 4. Sequential conversion: separate quiz PDFs + A4 formatted fallback for non-MCQ
@@ -55,7 +56,7 @@ w.eval(app + ';globalThis.__getOutputs=()=>outputs;globalThis.__getQueue=()=>que
     new File(['Q1. Separate first?\nA. Yes\nB. No\nAnswer: A'], 'first-separate.txt'),
     new File(['Plain notes with no MCQs.'], 'notes.txt')
   ]);
-  await w.convert();
+  await w.document.getElementById('convert').onclick();
   const outs = w.__getOutputs();
   assert.equal(outs.length, 2);
   assert.equal(outs[0].name, 'first-separate-quiz.pdf');
