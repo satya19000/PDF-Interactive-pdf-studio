@@ -62,6 +62,12 @@ w.eval(app + ';globalThis.__getOutputs=()=>outputs;globalThis.__getQueue=()=>que
   assert.equal(outs[0].resultType, 'quiz');
   assert.equal(outs[1].name, 'notes-A4-formatted.pdf');
   assert.equal(outs[1].resultType, 'formatted');
+  // Convert only one queued file, preserving other completed downloads.
+  const retained = outs[1];
+  await w.convert([w.__getQueue()[0]]);
+  assert.equal(w.__getOutputs().length, 2);
+  assert(w.__getOutputs().includes(retained));
+  assert.equal(w.document.querySelectorAll('#queue button.secondary').length, 2);
 
   // 5. Partial extraction outputs partial quiz + conversion report + A4 fallback
   w.document.getElementById('clear').click();

@@ -38,6 +38,10 @@ function render() {
     );
     const itemOutputs = outputs.filter(o => o.sourceItem === item);
     row.append(info);
+    const convertOne = el('button', 'secondary', itemOutputs.length ? 'Convert again' : 'Convert this file');
+    convertOne.disabled = busy;
+    convertOne.onclick = () => convert([item]);
+    row.append(convertOne);
     if (itemOutputs.length) {
       const primary = itemOutputs[0];
       const download = el('a', 'download', itemOutputs.length > 1 ? `Download (${itemOutputs.length})` : 'Download');
@@ -79,7 +83,7 @@ function add(files) {
   }
   render();
   $('status').textContent = added
-    ? `${pluralFiles(added)} added. Click Convert to process sequentially.`
+    ? `${pluralFiles(added)} added. Convert this file individually, or convert all files one by one.`
     : 'These files are already in your queue.';
 }
 
@@ -777,12 +781,14 @@ function buildConversionReport(item, extractedCount, resultLabel) {
   return lines.join('\n');
 }
 
-async function convert() {
+async function convert(items = queue) {
   if (busy) return;
+  const pending = Array.from(items).filter(item => queue.includes(item));
+  if (!pending.length) return;
   busy = true;
   cancelRequested = false;
-  outputs.forEach(o => URL.revokeObjectURL(o.url));
-  outputs = [];
+  outputs.filter(o => pending.includes(o.sourceItem)).forEach(o => URL.revokeObjectURL(o.url));
+  outputs = outputs.filter(o => !pending.includes(o.sourceItem));
   showOutputs();
   render();
 
@@ -790,7 +796,7 @@ async function convert() {
   let done = 0;
 
   try {
-    for (const item of queue) {
+    for (const item of pending) {
       if (cancelRequested) {
         item.state = 'Cancelled before processing';
         continue;
@@ -808,7 +814,7 @@ async function convert() {
       if (item.unsupported) {
         await formattedFallback(item, 'Unsupported file type.');
         done++;
-        setProgress(done / queue.length * 100, `Processed ${done} of ${pluralFiles(queue.length)}`);
+        setProgress(done / pending.length * 100, `Processed ${done} of ${pluralFiles(pending.length)}`);
         render(); showOutputs();
         continue;
       }
@@ -905,7 +911,7 @@ async function convert() {
       }
 
       done++;
-      setProgress(done / queue.length * 100, `Processed ${done} of ${pluralFiles(queue.length)}`);
+      setProgress(done / pending.length * 100, `Processed ${done} of ${pluralFiles(pending.length)}`);
       render();
       showOutputs();
       await new Promise(resolve => setTimeout(resolve, 0));
@@ -919,7 +925,7 @@ async function convert() {
   }
 }
 
-$('convert').onclick = convert;
+$('convert').onclick = () => convert();
 $('zip').onclick = async () => {
   if (!outputs.length) return;
   $('zip').disabled = true; $('zip').textContent = 'Preparing ZIP…';

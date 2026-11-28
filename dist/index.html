@@ -33,15 +33,16 @@
           <input id="files" type="file" multiple accept=".pdf,.docx,.pptx,.xlsx,.xls,.csv,.tsv,.txt,.md,.json,.html,.htm,.png,.jpg,.jpeg,.webp,.bmp,.gif">
           <span class="uploadicon">&#8613;</span>
           <strong>Drop files or folders here</strong>
-          <span>or <b>browse files</b></span>
+          <span>or <b>browse multiple files</b></span>
           <small>PDF &middot; Word &middot; PowerPoint &middot; Excel/CSV &middot; Text &middot; Images</small>
         </label>
         <div class="pick-actions">
           <label class="folderpick secondary">
             <input id="folder" type="file" webkitdirectory directory multiple>
-            <span>Browse folder (with subfolders)</span>
+            <span>Upload a folder (including subfolders)</span>
           </label>
         </div>
+        <p class="hint">Select multiple files together, or upload a folder. Use “Convert this file” beside any file, or convert the whole queue sequentially. Each result has its own download.</p>
         <div id="queue" class="queue">
           <div class="empty">Your conversion queue will appear here.<br><small>Files are processed one by one. A failure in one file will not stop the rest.</small></div>
         </div>
@@ -129,6 +130,6 @@
   <script src="vendor/jszip.min.js"></script>
   <script src="vendor/mammoth.browser.min.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
-  <script src="app.js?v=20261124c"></script>
+  <script src="app.js?v=20261128-batch"></script>
 </body>
 </html>
