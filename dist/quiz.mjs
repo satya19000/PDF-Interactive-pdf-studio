@@ -224,7 +224,7 @@ export async function captureVisualFigures(pdfjs, questions) {
 }
 
 // Detect the five shaded answer rows in image-only question banks.
-export function shadedOptionRows(imageData, width, height, xFraction = .93) {
+export function shadedOptionRows(imageData, width, height, xFraction = .93, optionCount = 5) {
   const x = Math.floor(width * xFraction), rows = [];
   const at = y => {
     const offset = (y * width + x) * 4, r = imageData[offset], g = imageData[offset + 1], b = imageData[offset + 2];
@@ -239,28 +239,70 @@ export function shadedOptionRows(imageData, width, height, xFraction = .93) {
     if (kind && y - start >= Math.max(10, height * .009)) rows.push({ kind, top: start, bottom: y });
     kind = next; start = y;
   }
-  for (let i = 0; i + 4 < rows.length; i++) {
-    const group = rows.slice(i, i + 5), height0 = group[0].bottom - group[0].top;
+  for (let i = 0; i + optionCount - 1 < rows.length; i++) {
+    const group = rows.slice(i, i + optionCount), height0 = group[0].bottom - group[0].top;
     if (group.every((row, j) => !j || row.top - group[j - 1].bottom <= Math.max(12, height0 * .35))) return { group, rows };
   }
   return { group: null, rows };
 }
 
-// PASTEST / screenshot paired exports put each unmarked question on an odd page
-// and its marked answer on the following page.
+// Probe visual structure, not page parity or OCR page labels. A cover may precede pairs.
+export async function detectPairedScreenshotStart(pdfjs, shouldCancel = () => false) {
+  const types = [];
+  for (let n = 1; n <= Math.min(5, pdfjs.numPages); n++) {
+    if (shouldCancel()) throw new Error('Conversion cancelled by user.');
+    const page = await pdfjs.getPage(n);
+    const viewport = page.getViewport({ scale: Math.min(2, 1100 / page.getViewport({ scale: 1 }).width) });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+    try {
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      const groups = [.55, .45, .35, .25, .75, .85].map(x => shadedOptionRows(pixels, canvas.width, canvas.height, x).group).filter(Boolean);
+      const kind = groups.some(g => g.filter(r => r.kind === 'green').length === 1) ? 'answer'
+        : groups.some(g => g.every(r => r.kind === 'gray')) ? 'question' : null;
+      types.push(kind);
+    } finally { canvas.width = canvas.height = 0; page.cleanup?.(); }
+  }
+  // Require two consecutive pairs, avoiding a single coincidental shaded table.
+  for (let i = 0; i + 3 < types.length; i++) {
+    if (types[i] === 'question' && types[i + 1] === 'answer' && types[i + 2] === 'question' && types[i + 3] === 'answer') return i + 1;
+  }
+  return null;
+}
+
 export async function extractPairedImageBank(pdfjs, onProgress = () => {}, options = {}) {
-  const { allowPartial = false, shouldCancel = () => false } = options;
-  if (pdfjs.numPages % 2 && !allowPartial) {
+  const { allowPartial = false, shouldCancel = () => false, startPage = 1, trimScreenshotChrome = false, reloadDocument = null } = options;
+  if ((pdfjs.numPages - startPage + 1) % 2 && !allowPartial) {
     throw new Error('This paired question bank has an unmatched page. Check the source PDF.');
   }
   const questions = [];
   const unresolvedPairs = [];
-  const totalPairs = Math.floor(pdfjs.numPages / 2);
+  const totalPairs = Math.floor((pdfjs.numPages - startPage + 1) / 2);
 
-  for (let number = 1; number + 1 <= pdfjs.numPages; number += 2) {
+  for (let number = startPage; number + 1 <= pdfjs.numPages; number += 2) {
     if (shouldCancel()) throw new Error('Conversion cancelled by user.');
-    const pairIndex = (number + 1) / 2;
+    const pairIndex = (number - startPage) / 2 + 1;
     const capture = async pageNumber => {
+      if (trimScreenshotChrome) {
+        const page = await pdfjs.getPage(pageNumber), base = page.getViewport({ scale: 1 });
+        const viewport = page.getViewport({ scale: Math.min(4, 2000 / base.width) });
+        const crop = document.createElement('canvas');
+        crop.width = Math.ceil(viewport.width); crop.height = Math.ceil(viewport.height);
+        try {
+          // Render once at roughly 280 dpi on A4. Do not copy every full-size
+          // embedded bitmap into several additional RGBA buffers.
+          await page.render({ canvasContext: crop.getContext('2d'), viewport }).promise;
+          const pixels = crop.getContext('2d').getImageData(0, 0, crop.width, crop.height).data;
+          let candidates = [.65, .55, .45, .35, .25, .85].map(x => ({ ...shadedOptionRows(pixels, crop.width, crop.height, x), xFraction: x }));
+          if (pageNumber === number && !candidates.some(c => c.group?.every(r => r.kind === 'gray'))) {
+            candidates = candidates.concat([.65, .55, .45, .35, .25, .85].map(x => ({ ...shadedOptionRows(pixels, crop.width, crop.height, x, 4), xFraction: x })));
+          }
+          const found = (pageNumber === number ? candidates.find(c => c.group?.every(r => r.kind === 'gray')) : candidates.find(c => c.group?.filter(r => r.kind === 'green').length === 1)) || candidates.find(c => c.group) || candidates[0];
+          return { crop, found };
+        } catch (err) { crop.width = crop.height = 0; throw err; }
+        finally { page.cleanup?.(); }
+      }
       const page = await pdfjs.getPage(pageNumber), ops = await page.getOperatorList();
       const viewport = page.getViewport({ scale: .25 }), preview = document.createElement('canvas');
       preview.width = Math.ceil(viewport.width); preview.height = Math.ceil(viewport.height);
@@ -297,7 +339,7 @@ export async function extractPairedImageBank(pdfjs, onProgress = () => {}, optio
           ctx.drawImage(tile, 0, top); top += image.height + 8; tile.width = tile.height = 0;
         }
         const pixels = crop.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, crop.width, crop.height).data;
-        const candidates = [.93, .85, .75, .65, .55, .45, .35, .25, .2, .15, .1].map(x => shadedOptionRows(pixels, crop.width, crop.height, x));
+        const candidates = [.93, .85, .75, .65, .55, .45, .35, .25, .2, .15, .1].map(x => ({ ...shadedOptionRows(pixels, crop.width, crop.height, x), xFraction: x }));
         const found = candidates.find(c => c.group?.some(row => row.kind === 'green')) || candidates.find(c => c.group) || candidates[0];
         return { crop, found };
       } finally {
@@ -310,22 +352,53 @@ export async function extractPairedImageBank(pdfjs, onProgress = () => {}, optio
     try {
       question = await capture(number);
       answer = await capture(number + 1);
-      if (question.found.group?.length !== 5 || answer.found.group?.length !== 5) {
+      if (!(trimScreenshotChrome ? [4, 5].includes(question.found.group?.length) : question.found.group?.length === 5) || answer.found.group?.length !== 5) {
         throw new Error(`Source pages ${number}-${number + 1}: could not verify five question and answer option rows.`);
       }
-      const qImage = question.crop.toDataURL('image/png');
       const { group, rows } = answer.found;
       const correct = group?.findIndex(row => row.kind === 'green') ?? -1;
+      if (trimScreenshotChrome && (!question.found.group.every(r => r.kind === 'gray') || group.filter(r => r.kind === 'green').length !== 1)) {
+        throw new Error(`Source pages ${number}-${number + 1}: unmarked question / marked answer sequence could not be verified.`);
+      }
+      const bandBounds = ({ crop, found }) => {
+        const ctx = crop.getContext('2d'), row = found.group[0];
+        const pixels = ctx.getImageData(0, row.top + 2, crop.width, 1).data;
+        const matches = x => { const i = x * 4, r = pixels[i], g = pixels[i + 1], b = pixels[i + 2]; return row.kind === 'green' ? g > r + 18 && g > b + 10 : r >= 210 && r < 241 && g >= 198 && g < 239 && b >= 185 && b < 232 && r >= g && g >= b; };
+        const centre = Math.floor(crop.width * found.xFraction);
+        let left = centre, right = centre;
+        while (left > 0 && matches(left - 1)) left--;
+        while (right < crop.width - 1 && matches(right + 1)) right++;
+        // Keep the label column and all leading stem/table text; a white divider
+        // between letter and option text must not become the left crop boundary.
+        return { x: 0, width: Math.min(crop.width, right + 5) };
+      };
+      if (trimScreenshotChrome) {
+        const band = bandBounds(question), old = question.crop, ctx = old.getContext('2d');
+        const pixels = ctx.getImageData(0, 0, old.width, old.height).data;
+        let headerEnd = 0;
+        for (let y = 0; y < Math.min(question.found.group[0].top, old.height * .25); y++) {
+          let dark = 0;
+          for (let sample = 1; sample <= 19; sample++) { const i = (y * old.width + Math.floor(old.width * sample / 20)) * 4; if (pixels[i] < 110 && pixels[i + 1] < 150 && pixels[i + 2] > pixels[i] + 10) dark++; }
+          if (dark >= 16) headerEnd = y + 1;
+        }
+        const top = headerEnd + 8, bottom = question.found.group.at(-1).bottom + 5;
+        const clean = document.createElement('canvas'); clean.width = band.width; clean.height = bottom - top;
+        clean.getContext('2d').drawImage(old, band.x, top, band.width, clean.height, 0, 0, clean.width, clean.height);
+        question.found.group = question.found.group.map(r => ({ ...r, top: r.top - top, bottom: r.bottom - top }));
+        question.crop = clean; old.width = old.height = 0;
+      }
+      const qImage = trimScreenshotChrome ? question.crop.toDataURL('image/jpeg', .96) : question.crop.toDataURL('image/png');
       const greenRows = rows.filter(row => row.kind === 'green');
       const repeat = greenRows[1];
       const from = greenRows[0]?.bottom || group?.[4]?.bottom || 0;
       const top = repeat && from ? Math.min(answer.crop.height - 1, Math.max(from + 2, repeat.top - 60)) : 0;
-      const bottom = answer.crop.height;
+      const navigation = trimScreenshotChrome && repeat ? rows.find(r => r.kind === 'green' && r.top > repeat.bottom + 20) : null;
+      const bottom = navigation ? navigation.top - 12 : answer.crop.height;
       const answerCrop = document.createElement('canvas');
       answerCrop.width = answer.crop.width; answerCrop.height = Math.max(1, bottom - top);
       answerCrop.getContext('2d').drawImage(answer.crop, 0, top, answer.crop.width, answerCrop.height, 0, 0, answerCrop.width, answerCrop.height);
       const answerPixels = answerCrop.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, answerCrop.width, answerCrop.height).data;
-      const content = imageQuizContentBounds(answerPixels, answerCrop.width, answerCrop.height);
+      const content = trimScreenshotChrome ? { ...bandBounds(answer), y: 0 } : imageQuizContentBounds(answerPixels, answerCrop.width, answerCrop.height);
       const trimmed = document.createElement('canvas'); trimmed.width = content.width; trimmed.height = answerCrop.height - content.y;
       trimmed.getContext('2d').drawImage(answerCrop, content.x, content.y, content.width, trimmed.height, 0, 0, content.width, trimmed.height);
 
@@ -374,13 +447,14 @@ export async function extractPairedImageBank(pdfjs, onProgress = () => {}, optio
         }
         const slice = document.createElement('canvas'); slice.width = trimmed.width; slice.height = end - start;
         slice.getContext('2d').drawImage(trimmed, 0, start, trimmed.width, slice.height, 0, 0, trimmed.width, slice.height);
-        answerPages.push(slice.toDataURL('image/png')); slice.width = slice.height = 0; start = end;
+        answerPages.push(trimScreenshotChrome ? slice.toDataURL('image/jpeg', .96) : slice.toDataURL('image/png')); slice.width = slice.height = 0; start = end;
       }
       questions.push({
         id: `paired-${number}`, stem: `Source question ${pairIndex}`, options: ['A', 'B', 'C', 'D', 'E'],
         answer: correct >= 0 ? correct : null, explanation: '', sourcePage: number, verified: correct >= 0,
         imageQuestionData: qImage, imageQuestionWidth: question.crop.width, imageQuestionHeight: question.crop.height,
         imageQuestionRows: question.found.group?.map(row => ({ top: row.top, bottom: row.bottom })) || [],
+        sourceWarning: question.found.group.length !== group.length ? `Source question has ${question.found.group.length} visible options; answer page has ${group.length}. Original content preserved.` : '',
         imageAnswerPagesData: answerPages
       });
       answerCrop.width = 0; answerCrop.height = 0; trimmed.width = 0; trimmed.height = 0;
@@ -392,6 +466,10 @@ export async function extractPairedImageBank(pdfjs, onProgress = () => {}, optio
       if (answer?.crop) { answer.crop.width = 0; answer.crop.height = 0; }
     }
     onProgress(pairIndex, totalPairs);
+    // PDF.js may retain decoded shared images beyond page.cleanup(). Release
+    // document-level caches between completed pairs, never during a render.
+    if (pairIndex % 5 === 0) await pdfjs.cleanup?.();
+    if (reloadDocument && pairIndex % 5 === 0 && pairIndex < totalPairs) pdfjs = await reloadDocument();
     if (number % 10 === 1) await new Promise(resolve => setTimeout(resolve, 0));
   }
   if (!allowPartial && questions.length !== totalPairs) {
@@ -938,13 +1016,14 @@ export async function buildQuizPdf(questions, title, onProgress = () => {}, exis
       const left = 42, top = A4_HEIGHT - 64, bottom = top - height;
       page.drawImage(picture, { x: left, y: bottom, width, height });
       let result = doc.addPage([A4_WIDTH, A4_HEIGHT]);
-      if (q.imageQuestionRows?.length === 5) {
+      if (q.imageQuestionRows?.length >= 2) {
         for (const row of q.imageQuestionRows) {
           const upper = top - row.top * ratio, lower = top - row.bottom * ratio;
           goto(doc, page, [left, lower, left + width, upper], result);
         }
       } else goto(doc, page, [left, bottom, left + width, top], result);
       page.drawText('Tap an option to view the answer.', { x: 42, y: 42, size: 10, font: regular, color: grey });
+      if (q.sourceWarning) page.drawText(q.sourceWarning, { x: 42, y: 28, size: 8, font: regular, color: amber });
       header(result, 'ANSWER & EXPLANATION', green);
       const answerData = q.imageAnswerPagesData || [q.imageAnswerData];
       const imgAnswerPages = [];

@@ -256,7 +256,7 @@ async function makeSource(file, titleText = '') {
       throw new Error('This PDF is corrupt or password-protected and cannot be opened.');
     }
   }
-  const { A4_WIDTH, A4_HEIGHT, safeTextForFont, embedStudioFonts } = await import('./quiz.mjs?v=20261124c');
+  const { A4_WIDTH, A4_HEIGHT, safeTextForFont, embedStudioFonts } = await import('./quiz.mjs?v=20261128-pairs');
   const { PDFDocument, rgb } = PDFLib;
   const doc = await PDFDocument.create();
   const { regular, bold, unicode } = await embedStudioFonts(doc);
@@ -444,7 +444,7 @@ async function formattedFallback(item, reason) {
         const pdf = await getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
         try {
           const texts = []; let safe = true;
-          const { textLinesFromItems } = await import('./quiz.mjs?v=20261124c');
+          const { textLinesFromItems } = await import('./quiz.mjs?v=20261128-pairs');
           for (let n = 1; n <= pdf.numPages; n++) {
             const p = await pdf.getPage(n), items = (await p.getTextContent()).items;
             const ops = await p.getOperatorList();
@@ -452,7 +452,7 @@ async function formattedFallback(item, reason) {
             texts.push(textLinesFromItems(items).join('\n'));
             p.cleanup?.();
           }
-          const { embedStudioFonts, hasGlyph } = await import('./quiz.mjs?v=20261124c');
+          const { embedStudioFonts, hasGlyph } = await import('./quiz.mjs?v=20261128-pairs');
           if (safe) {
             const probeDoc = await PDFLib.PDFDocument.create();
             const probeFonts = await embedStudioFonts(probeDoc);
@@ -467,7 +467,7 @@ async function formattedFallback(item, reason) {
         } finally { await pdf.destroy(); }
       }
       if (!reflowed) {
-        const { A4_WIDTH, A4_HEIGHT } = await import('./quiz.mjs?v=20261124c');
+        const { A4_WIDTH, A4_HEIGHT } = await import('./quiz.mjs?v=20261128-pairs');
         source = await PDFLib.PDFDocument.load(new Uint8Array(await source.save()));
         const doc = await PDFLib.PDFDocument.create();
         for (const page of source.getPages()) {
@@ -636,8 +636,8 @@ async function extractQuiz(item, report = setProgress) {
     structuredSpreadsheet, hasStructuredAnswerKey, parseVisualOptionBank,
     textLinesFromItems, inferBmjAnswerColors, captureBmjFigures,
     captureMyPastestFigures, captureVisualFigures, recognizeScannedPage,
-    extractPairedImageBank
-  } = await import('./quiz.mjs?v=20261124c');
+    extractPairedImageBank, detectPairedScreenshotStart
+  } = await import('./quiz.mjs?v=20261128-pairs');
 
   item.unresolvedIndices = [];
   item.countVerified = false;
@@ -672,9 +672,25 @@ async function extractQuiz(item, report = setProgress) {
     return structured(combined);
   }
   if (type === 'pdf') {
-    const { getDocument, GlobalWorkerOptions } = await import('./vendor/pdf.mjs');
+    const { getDocument, GlobalWorkerOptions, PDFDataRangeTransport } = await import('./vendor/pdf.mjs');
     GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.mjs', location.href).href;
-    const pdfjs = await getDocument({ data: new Uint8Array(await item.file.arrayBuffer()), disableFontFace: true }).promise;
+    let task;
+    const openPdf = async () => {
+    let rejectRange, aborted = false;
+    const readError = new Promise((_, reject) => { rejectRange = reject; });
+    if (item.file.size >= 24 * 1024 * 1024) {
+      class LocalRange extends PDFDataRangeTransport {
+        requestDataRange(begin, end) {
+          item.file.slice(begin, end).arrayBuffer().then(data => { if (!aborted) this.onDataRange(begin, new Uint8Array(data)); }).catch(rejectRange);
+        }
+        abort() { aborted = true; }
+      }
+      const initial = new Uint8Array(await item.file.slice(0, 65536).arrayBuffer());
+      task = getDocument({ range: new LocalRange(item.file.size, initial), disableFontFace: true, disableAutoFetch: true, disableStream: true });
+    } else task = getDocument({ data: new Uint8Array(await item.file.arrayBuffer()), disableFontFace: true });
+    return await Promise.race([task.promise, readError]);
+    };
+    const pdfjs = await openPdf();
     try {
       const pages = [];
       for (let p = 1; p <= pdfjs.numPages; p++) {
@@ -695,7 +711,10 @@ async function extractQuiz(item, report = setProgress) {
         const compact = items.map(i => i.str || '').join(' ').replace(/\s+/g, ' ').trim();
         return new RegExp('Page\\s*(?:' + (index + 1) + '\\s*of\\s*' + pdfjs.numPages + '|of\\s*' + (index + 1) + '\\s*' + pdfjs.numPages + ')\\b', 'i').test(compact);
       }).length;
-      if (pdfjs.numPages >= 2 && pdfjs.numPages % 2 === 0 && pageLabelHits >= Math.max(2, Math.floor(pdfjs.numPages * 0.8))) {
+      const labelledPairs = pdfjs.numPages % 2 === 0 && pageLabelHits >= Math.max(2, Math.floor(pdfjs.numPages * 0.8));
+      const sparseText = pages.filter(items => items.map(i => i.str || '').join('').length > 80).length < pages.length * .25;
+      const pairStart = labelledPairs ? 1 : sparseText ? await detectPairedScreenshotStart(pdfjs, () => cancelRequested) : null;
+      if (pairStart) {
         item.state = `Preserving 0/${pdfjs.numPages / 2} source pairs`; render();
         const { questions, unresolvedPairs, totalPairs } = await extractPairedImageBank(
           pdfjs,
@@ -704,7 +723,8 @@ async function extractQuiz(item, report = setProgress) {
             report(50 + done / total * 35, `${item.file.name}: preserved ${done} of ${total} question/answer pairs`);
             render();
           },
-          { allowPartial: true, shouldCancel: () => cancelRequested }
+          { allowPartial: true, shouldCancel: () => cancelRequested, startPage: pairStart, trimScreenshotChrome: !labelledPairs,
+            reloadDocument: !labelledPairs ? async () => { await task.destroy(); return openPdf(); } : null }
         );
         if (questions.length) {
           item.expectedMCQs = totalPairs;
@@ -770,7 +790,7 @@ async function extractQuiz(item, report = setProgress) {
       item.countVerified = false;
       if (!questions.length) { item.skipReason = `OCR read ${scanned.length} page(s); no MCQs recognized`; return []; }
       return questions;
-    } finally { await pdfjs.destroy(); }
+    } finally { await task.destroy(); }
   }
 
   if (['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(type)) {
@@ -819,7 +839,7 @@ async function convert(items = queue) {
   showOutputs();
   render();
 
-  const { buildQuizPdf, splitQuestionsIntoParts } = await import('./quiz.mjs?v=20261124c');
+  const { buildQuizPdf, splitQuestionsIntoParts } = await import('./quiz.mjs?v=20261128-pairs');
   let done = 0;
 
   try {
@@ -863,7 +883,7 @@ async function convert(items = queue) {
             continue;
           }
           const { getDocument, GlobalWorkerOptions } = await import('./vendor/pdf.mjs');
-          const { extractLegacyQuizPdf } = await import('./quiz.mjs?v=20261124c');
+          const { extractLegacyQuizPdf } = await import('./quiz.mjs?v=20261128-pairs');
           GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.mjs', location.href).href;
           const pdfjs = await getDocument({ data: new Uint8Array(await item.file.arrayBuffer()) }).promise;
           try {
@@ -1008,7 +1028,7 @@ $('combineDownloaded').onclick = async () => {
   if ($('combineMergeFallback')) $('combineMergeFallback').hidden = true;
   try {
     const { getDocument, GlobalWorkerOptions } = await import('./vendor/pdf.mjs');
-    const { buildQuizPdf, findDuplicateQuestions } = await import('./quiz.mjs?v=20261124c');
+    const { buildQuizPdf, findDuplicateQuestions } = await import('./quiz.mjs?v=20261128-pairs');
     GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.mjs', location.href).href;
     const all = [];
     for (let i = 0; i < combineQueue.length; i++) {

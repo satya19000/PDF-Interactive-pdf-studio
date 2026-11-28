@@ -102,6 +102,7 @@ fillRow(240, 270, 230, 225, 220);
 const shaded = shadedOptionRows(rgba, w, h, 0.5);
 assert.equal(shaded.group?.length, 5);
 assert.equal(shaded.group[2].kind, 'green');
+assert.equal(shadedOptionRows(rgba, w, h, 0.5, 4).group?.length, 4);
 const bounds = imageQuizContentBounds(rgba, w, h);
 assert(bounds.height > 100);
 
