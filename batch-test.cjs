@@ -105,12 +105,12 @@ w.eval(app + ';globalThis.__getOutputs=()=>outputs;globalThis.__getQueue=()=>que
   assert.equal(w.__getOutputs().length, before - 1);
   assert(!w.__getOutputs().includes(firstOutput));
   assert.equal(w.__getQueue().length, queueSize);
-  // ZIP download clears its snapshot of ready outputs, but keeps original uploads.
+  // ZIP download clears ready outputs and releases their completed source uploads.
   w.JSZip = require('jszip');
   w.HTMLAnchorElement.prototype.click = () => {};
   await w.document.getElementById('zip').onclick();
   assert.equal(w.__getOutputs().length, 0);
   assert.equal(w.document.getElementById('results').hidden, true);
-  assert.equal(w.__getQueue().length, queueSize);
+  assert.equal(w.__getQueue().length, 0);
   console.log('PASS: batch-test.cjs (folder queue, separate outputs, timestamps, download cleanup, partial quiz+report, A4 continuation).');
 })().catch(e => { console.error(e); process.exitCode = 1; });

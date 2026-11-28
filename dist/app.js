@@ -12,13 +12,20 @@ const outputDateTime = value => new Date(value).toLocaleString('en-IN', {
   day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short'
 });
 
+function releaseDownloadedUploads() {
+  if (busy) return;
+  queue = queue.filter(item => !item.downloadRequested || outputs.some(o => o.sourceItem === item));
+}
+
 function removeRequestedDownloads(requested) {
   outputs = outputs.filter(o => !requested.includes(o));
+  for (const o of requested) if (o.sourceItem) o.sourceItem.downloadRequested = true;
   // Keep object URLs alive briefly so the browser can start reading the download.
-  for (const o of requested) setTimeout(() => URL.revokeObjectURL(o.url), 60000);
+  for (const url of requested.map(o => o.url)) setTimeout(() => URL.revokeObjectURL(url), 60000);
+  releaseDownloadedUploads();
   render();
   showOutputs();
-  $('status').textContent = 'Download requested. Removed from ready outputs; original uploads remain available to convert again. Check your browser Downloads.';
+  $('status').textContent = 'Download requested. Completed uploads are cleared after all their outputs are requested. PC originals are unchanged. Check your browser Downloads.';
 }
 
 function clearAfterDownload(o) {
@@ -939,6 +946,7 @@ async function convert(items = queue) {
   } finally {
     busy = false;
     cancelRequested = false;
+    releaseDownloadedUploads();
     render();
     showOutputs();
     if (outputs.length) $('results').scrollIntoView?.({ behavior: 'smooth' });
