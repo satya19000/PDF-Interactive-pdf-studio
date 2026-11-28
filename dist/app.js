@@ -3,6 +3,35 @@ const $ = id => document.getElementById(id);
 const allowed = new Set('pdf docx pptx xlsx xls csv tsv txt md json html htm png jpg jpeg webp bmp gif'.split(' '));
 let queue = [], outputs = [], busy = false, cancelRequested = false;
 let combineQueue = [], combinedUrl = null;
+let previewOutput = null, previewUrl = null;
+
+function closePreview() {
+  $('pdfPreview').hidden = true;
+  $('previewFrame').removeAttribute('src');
+  $('previewOpen').removeAttribute('href');
+  $('previewDownload').removeAttribute('href');
+  $('previewDownload').onclick = null;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = null; previewOutput = null;
+}
+
+function openPreview(output) {
+  closePreview();
+  previewOutput = output;
+  // Force PDF MIME for previews of originals, never render arbitrary uploaded HTML.
+  previewUrl = URL.createObjectURL(new Blob([output.blob], { type: 'application/pdf' }));
+  $('previewName').textContent = output.name;
+  $('previewFrame').src = previewUrl;
+  $('previewOpen').href = previewUrl;
+  $('previewDownload').href = output.url;
+  $('previewDownload').download = output.name;
+  $('previewDownload').onclick = () => clearAfterDownload(output);
+  $('pdfPreview').hidden = false;
+  $('pdfPreview').scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  $('previewClose').focus();
+}
+
+$('previewClose').onclick = closePreview;
 
 const ext = name => (name.includes('.') ? name.split('.').pop().toLowerCase() : '');
 const stem = name => name.replace(/\.[^.]+$/, '');
@@ -368,6 +397,7 @@ function uniqueOutputName(baseOrDesired, suffix = '') {
 }
 
 function showOutputs() {
+  if (previewOutput && !outputs.includes(previewOutput)) closePreview();
   $('results').hidden = !outputs.length;
   $('zip').hidden = outputs.length <= 1;
   $('outputs').replaceChildren();
@@ -419,7 +449,15 @@ function renderOutputRow(o) {
   a.href = o.url;
   a.download = o.name;
   a.onclick = () => clearAfterDownload(o);
-  row.append(el('div', 'fileicon', o.resultType === 'report' ? 'TXT' : 'PDF'), info, a);
+  const actions = el('div', 'output-actions');
+  if (/\.pdf$/i.test(o.name)) {
+    const preview = el('button', 'secondary preview-button', 'Preview');
+    preview.setAttribute('aria-label', 'Preview ' + o.name);
+    preview.onclick = () => openPreview(o);
+    actions.append(preview);
+  }
+  actions.append(a);
+  row.append(el('div', 'fileicon', o.resultType === 'report' ? 'TXT' : 'PDF'), info, actions);
   return row;
 }
 

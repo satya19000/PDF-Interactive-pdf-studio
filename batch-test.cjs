@@ -101,10 +101,20 @@ w.eval(app + ';globalThis.__getOutputs=()=>outputs;globalThis.__getQueue=()=>que
   assert(w.document.getElementById('outputs').textContent.includes('Created:'));
   const before = w.__getOutputs().length;
   const queueSize = w.__getQueue().length;
-  w.document.querySelector('#outputs a.download').onclick();
+  w.document.querySelector('#outputs .preview-button').onclick();
+  assert.equal(w.document.getElementById('pdfPreview').hidden, false);
+  assert.equal(w.document.getElementById('previewName').textContent, firstOutput.name);
+  assert(w.document.getElementById('previewFrame').src.startsWith('blob:'));
+  assert.equal(w.__getOutputs().length, before, 'Preview must not remove output');
+  w.document.getElementById('previewClose').click();
+  assert.equal(w.document.getElementById('pdfPreview').hidden, true);
+  assert.equal(w.document.getElementById('previewFrame').hasAttribute('src'), false);
+  w.document.querySelector('#outputs .preview-button').onclick();
+  w.document.getElementById('previewDownload').onclick();
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(w.__getOutputs().length, before - 1);
   assert(!w.__getOutputs().includes(firstOutput));
+  assert.equal(w.document.getElementById('pdfPreview').hidden, true);
   assert.equal(w.__getQueue().length, queueSize);
   // ZIP download clears ready outputs and releases their completed source uploads.
   w.JSZip = require('jszip');

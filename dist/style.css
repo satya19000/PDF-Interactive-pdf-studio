@@ -68,6 +68,9 @@ progress{width:100%;accent-color:#2d4eff;margin-top:10px}
 .download{color:#2d4eff;font-size:14px;font-weight:600;text-decoration:none;white-space:nowrap;padding:6px 10px;border:1px solid #dce3f0;border-radius:6px;background:#f8faff}
 .download:hover{background:#edf1ff}
 .output-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto}
+.preview-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.preview-toolbar h2{flex:1;min-width:180px;overflow-wrap:anywhere}
+.preview-frame{display:block;width:100%;height:75vh;min-height:340px;border:1px solid #dce3f0;border-radius:8px;background:#f4f6fb}
 .output small{display:block;font-weight:400;margin-top:4px;color:#7c879a}
 .file .download{font-size:12px;margin-left:auto}
 .file .textbtn{padding:5px}

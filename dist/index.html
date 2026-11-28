@@ -88,6 +88,19 @@
       <p class="hint">Each output shows its creation date and local time. Download requests remove outputs from this list. Once all outputs for a file are requested, its original upload is also cleared from the queue. Your PC originals are unchanged. Check browser Downloads to confirm files were saved.</p>
     </section>
 
+    <section class="panel results" id="pdfPreview" hidden aria-labelledby="previewName">
+      <div class="sectionhead preview-toolbar">
+        <h2 id="previewName">PDF preview</h2>
+        <button id="previewClose" class="secondary">Close preview</button>
+      </div>
+      <div class="preview-toolbar">
+        <a id="previewOpen" class="secondary" target="_blank" rel="noopener">Open in new tab</a>
+        <a id="previewDownload" class="download">Download PDF</a>
+      </div>
+      <p class="hint">Preview keeps your file in the ready list. If the embedded viewer is unavailable, use Open in new tab. Use this Download PDF button to clear the output after requesting its download.</p>
+      <iframe id="previewFrame" title="Converted PDF preview" class="preview-frame"></iframe>
+    </section>
+
     <section class="panel results" id="combinePanel">
       <div class="sectionhead">
         <h2><span>03</span> Combine quiz PDFs</h2>
@@ -132,6 +145,6 @@
   <script src="vendor/jszip.min.js"></script>
   <script src="vendor/mammoth.browser.min.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
-  <script src="app.js?v=20261128-convertall"></script>
+  <script src="app.js?v=20261128-preview"></script>
 </body>
 </html>
