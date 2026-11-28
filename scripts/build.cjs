@@ -6,6 +6,7 @@ fs.mkdirSync(output, { recursive: true });
 const assets = {
   'pdf-lib/dist/pdf-lib.min.js': 'pdf-lib.min.js',
   'pdf-lib/LICENSE.md': 'pdf-lib-LICENSE.md',
+  '@pdf-lib/fontkit/dist/fontkit.umd.min.js': 'fontkit.umd.min.js',
   'jszip/dist/jszip.min.js': 'jszip.min.js',
   'jszip/LICENSE.markdown': 'jszip-LICENSE.md',
   'mammoth/mammoth.browser.min.js': 'mammoth.browser.min.js',
