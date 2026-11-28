@@ -1,29 +1,41 @@
 # PDF Interactive Studio
 
-Static, private-by-default browser application. Serve `dist/` with a static web server. No API keys or backend are required. Files are processed in memory and are not uploaded. Reloading clears the queue and generated files.
+Browser-local question-bank conversion. Serve `dist/`; document bytes are not sent to a server. No API key is required.
 
-## Features
-- Quiz mode accepts multiple files or a browser-selected folder. By default it converts each source separately and puts a PDF download button on that file’s queue row. Duplicate filenames from different subfolders receive distinct output names. Optional combined mode keeps continuous question numbering in one PDF.
-- An older `-quiz.pdf` with five repeated answer pages per MCQ can be uploaded alone in separate mode to rebuild it with one answer page per MCQ. In combined mode, an older base quiz is rebuilt before appending new files. Modern base quizzes retain their pages and continue numbering. The original quiz title is retained.
-- `Q-1` and similar question headers, answer letters, and answer text on the next line are recognized; long explanations continue on linked pages
-- Scanned PDF pages are read with locally bundled English OCR, with page-by-page progress and an MCQ count. Paired PASTEST exports with numbered library headers preserve every odd-page question image and its following answer image, including tables and symbols OCR cannot read; output count must equal half the source page count. Five clickable option rows link to one answer/explanation page.
-- Text-based past-paper exports with unnumbered stems and separate A–E option labels are read in visual page order. The corresponding highlighted answer and explanation are carried into the new quiz, including explanations continued on the next source page.
-- BMJ OnExamination answer-key extraction checks highlighted answer rows; questions without a reliable key export with “No answer for this question”
-- Source figures tagged Photographic are preserved on linked figure pages without the printed options
-- Per-file count gate: numbered text banks, BMJ question headers, and paired PASTEST exports must match their independently detected source question count before export. Unverifiable layouts fail with a visible file error, and other files in the batch continue.
-- Clickable source-page index with internal PDF links
-- Editable AcroForm notes and page-review checkboxes
-- Individual PDF downloads and a ZIP of successful outputs
-- Original PDF pages and existing form fields retained
-- DOCX text and raster images; PPTX text and raster images; spreadsheets as cell values; plain text, HTML text and common raster images
+## Conversion pipeline
 
-## Limitations
-No parser can guarantee finding every MCQ in arbitrary unnumbered scans. Separate mode refuses to export a PDF when its source question count cannot be verified, rather than presenting a partial PDF as complete. Quiz mode requires recognizable questions and choices, with selectable text or a sufficiently clear English scan. The paired PASTEST image layout keeps source question and answer pixels and does not depend on OCR text. Other scanned layouts use OCR, which can take a long time and may misread text. Unrecognized layouts are skipped and reported, even if the source visually contains MCQs. An unknown key stays unknown in the PDF; it is never guessed. The source answer key may still need independent checking before clinical study use. Color extraction is specific to BMJ and PASTEST's highlighted rows. Figures not tagged Photographic may be omitted. All choices link to one answer page per question. Correct choices are green and incorrect choices are red there; the PDF does not remember which choice was tapped. Long explanations continue on linked pages. Very long question stems may not fit a page; long explanations continue on linked pages. Reflowed legacy text is rasterized for Unicode support, so it is not selectable/searchable. Office layouts, charts and vector artwork are not preserved. Digital signatures do not survive modification. Encrypted PDFs are rejected. Browser memory determines practical file limits; there is no artificial size limit.
+1. Detect the source layout and retain source question/page identifiers.
+2. Extract question/options separately from the answer and complete discussion.
+3. Clean reconstructed text of non-Latin/non-Greek scripts and interface glyphs while preserving clinical symbols and units. This is script filtering, not general language detection.
+4. Validate each record independently. Invalid records are reported; valid questions remain exportable.
+5. Generate true A4 (595.28 × 841.89 pt), selectable native 14 pt question pages. Answers start after all question/options pages. Every option links to the same answer page.
+6. Report complete/partial coverage separately. Unknown answers are never guessed.
 
-Original-layout mode is explicitly labeled as keeping source pages and notes. Its optional choice markers are ungraded, and its output is named `-original-layout.pdf`. Use New quiz PDF mode for fresh questions and red/green feedback.
+Printed timer-based past-paper banks have a source-aware parser, including split-page explanations, four/five-option variations and native investigations tables. Existing structured text, DOCX lists, spreadsheet tables, BMJ and paired screenshot paths remain available.
 
-## Verification
-`npm ci`, `node test.cjs`, and `node batch-test.cjs` run integration checks using jsdom and a native canvas adapter. Tests write only temporary fixtures beneath `/workspace/scratch/d84423f2b585/qa`. The 31-page PDF test verifies existing field retention, review boxes, notes fields and index pages. The batch test verifies separate per-file outputs, mismatched-count blocking, skipped files, merged questions, and repeated continuation with modern clickable answers intact; a 63-page real question bank also yielded 169 questions and 167 answer keys through the PDF.js text path. Browser visual QA was unavailable in this environment.
+## Workflow
 
-## Dependencies
-Vendor copies from pinned npm packages: pdf-lib, JSZip, Mammoth, SheetJS, Tesseract.js and its WebAssembly core. English language data is bundled in `dist/vendor/ocr-lang/`. License files are in `dist/vendor/`. No remote scripts or analytics.
+Upload multiple files or a folder including subfolders. Convert all files sequentially or convert one selected file. Large image banks are split into parts with continuous numbering. Preview, manually download individual outputs or a ZIP, and optionally combine ordered quiz files.
+
+Outputs show a creation timestamp. A download request removes that output; after all outputs for an upload have been requested, its queue data is released. This does not delete files on the user's computer. Browsers cannot confirm the final save, so check Downloads.
+
+## Honest limitations
+
+- No parser can guarantee every MCQ in every arbitrary document. Partial exports include a coverage report and a separate source/reference fallback.
+- A4 source/reference copies are **not interactive quizzes**. They may retain mixed question/answer layouts and non-English image lettering. They are clearly labeled, never reported as a successful English reconstruction.
+- Reconstructed text is script-filtered; languages using Latin letters are not reliably distinguished. Preserved raster images are not automatically language-sanitized.
+- Screenshot lettering is not native 14 pt. Enlargement cannot restore missing source detail. Unsupported/encrypted/corrupt files may only permit an original download.
+- Standard PDF links do not remember which answer the student selected.
+- Browser memory and OCR quality set practical limits. No universal size or error-free conversion promise is made.
+
+## Build and tests
+
+`npm ci && npm run build && npm test`
+
+`node printed-bank-test.cjs "/path/to/MRCP_Past_Paper_May_2015_VERIFIED-A4-formatted.pdf"` runs the real May layout integration assertions (100 questions/keys, complete discussions, A4, native 14 pt, language filtering and links).
+
+`node --expose-gc paired-test.cjs "/path/to/PAST PAPERS (47).pdf" 99` tests paired screenshot preservation.
+
+Vendor dependencies and English OCR assets are bundled in `dist/vendor/`. License files are included. Keep user PDFs and generated study outputs out of the public repository.
+
+See `docs/MASTER_REQUIREMENTS.md` for the authoritative user requirements and the pre-repair audit. That audit records the baseline, not the current implementation status.

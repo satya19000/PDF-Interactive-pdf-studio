@@ -1,3 +1,5 @@
+import { cleanEnglishText, cleanQuestionEnglish, parsePrintedQuestionBank } from './pipeline.mjs';
+export { cleanEnglishText, cleanQuestionEnglish, parsePrintedQuestionBank };
 // A clean question bank is built from source text, never by covering printed answers.
 const letters = 'ABCDE';
 export const A4_WIDTH = 595.28;
@@ -846,6 +848,18 @@ export function validateQuiz(questions) {
   return questions.filter(q => !q.stem || q.options.length < 2 || q.options.length > 5 || (Number.isInteger(q.answer) && (q.answer < 0 || q.answer >= q.options.length)) || (q.hasVisual && !q.visualData));
 }
 
+export function prepareQuestions(questions) {
+  const language = { removedCharacters: 0 }, valid = [], rejected = [];
+  for (let i = 0; i < questions.length; i++) {
+    try {
+      const q = cleanQuestionEnglish(questions[i], language);
+      if (validateQuiz([q]).length || !q.options.every(t => t.trim())) throw new Error('Incomplete question, options or figure after cleaning');
+      valid.push(q);
+    } catch (err) { rejected.push({ index: questions[i]?.sourceNumber || i + 1, sourcePage: questions[i]?.sourcePage, reason: err.message }); }
+  }
+  return { valid, rejected, language };
+}
+
 // Printed MyPastest PDFs identify each question in a footer URL and often
 // continue the answer discussion on the following page.
 export function parseMyPastest(pages) {
@@ -977,6 +991,7 @@ function goto(doc, page, rectangle, target) {
 }
 
 export async function buildQuizPdf(questions, title, onProgress = () => {}, existing = null, options = {}) {
+  questions = questions.map(q => cleanQuestionEnglish(q));
   if (!questions.length || validateQuiz(questions).length) {
     throw new Error('Some questions could not be extracted. Try a text-based PDF with clear options.');
   }
@@ -988,7 +1003,7 @@ export async function buildQuizPdf(questions, title, onProgress = () => {}, exis
   const doc = existing?.doc || await PDFDocument.create();
   const { regular, bold, unicode } = await embedStudioFonts(doc);
   const fallbackTracker = { transliterated: new Set(), unmapped: new Set() };
-  const safe = text => safeTextForFont(text, regular, unicode, fallbackTracker);
+  const safe = text => safeTextForFont(cleanEnglishText(text), regular, unicode, fallbackTracker);
   const ink = rgb(.11, .17, .27), green = rgb(.08, .47, .28), red = rgb(.76, .22, .24), amber = rgb(.52, .36, .09), blue = rgb(.15, .32, .75), grey = rgb(.39, .45, .54);
   const questionPages = [], lastAnswerPages = [];
   const heading = safe(title.trim().replace(/_/g, ' ') || 'MCQ Question Bank');
@@ -1046,9 +1061,14 @@ export async function buildQuizPdf(questions, title, onProgress = () => {}, exis
     // Reconstructed body text uses 14 pt on true A4 pages with continuation pages as needed.
     const bodySize = 14, bodyLine = 19.6;
     let y = A4_HEIGHT - 74;
-    const stemLines = wrappedLines(q.stem, 511, regular, bodySize, unicode, fallbackTracker);
-
-    for (const line of stemLines) {
+    const questionSpace = height => {
+      if (y - height < 92) {
+        page = doc.addPage([A4_WIDTH, A4_HEIGHT]);
+        header(page, `QUESTION ${number} / ${totalQuestions} · CONTINUED`, blue);
+        y = A4_HEIGHT - 74;
+      }
+    };
+    const questionLine = line => {
       if (y < 92) {
         page = doc.addPage([A4_WIDTH, A4_HEIGHT]);
         header(page, `QUESTION ${number} / ${totalQuestions} · CONTINUED`, blue);
@@ -1056,11 +1076,46 @@ export async function buildQuizPdf(questions, title, onProgress = () => {}, exis
       }
       page.drawText(line, { x: 42, y, size: bodySize, font: regular, color: ink });
       y -= bodyLine;
+    };
+    for (const block of q.stemBlocks || [{ type: 'paragraph', text: q.stem }]) {
+      if (block.type !== 'table') {
+        for (const line of wrappedLines(block.text || '', 511, regular, bodySize, unicode, fallbackTracker)) questionLine(line);
+        y -= 6;
+        continue;
+      }
+      questionSpace(40);
+      page.drawText('INVESTIGATIONS', { x: 42, y, size: 14, font: bold, color: ink }); y -= 22;
+      const count = Math.max(1, ...block.rows.map(row => row.length));
+      const widths = count === 1 ? [511] : count === 2 ? [220, 291] : [230, ...Array(count - 1).fill(281 / (count - 1))];
+      for (const cells of block.rows) {
+        const cellWidths = cells.length === 1 ? [511] : widths;
+        const lines = cells.map((cell, index) => wrappedLines(cell, cellWidths[index] - 16, regular, bodySize, unicode, fallbackTracker));
+        let lineIndex = 0, totalLines = Math.max(1, ...lines.map(l => l.length));
+        while (lineIndex < totalLines) {
+          questionSpace(36);
+          const take = Math.max(1, Math.min(totalLines - lineIndex, Math.floor((y - 92 - 10) / bodyLine)));
+          const height = take * bodyLine + 10;
+          let x = 42;
+          cells.forEach((cell, index) => {
+            page.drawRectangle({ x, y: y - height + 4, width: cellWidths[index], height, borderColor: rgb(.81, .85, .9), borderWidth: .5, color: rgb(.975, .983, .99) });
+            lines[index].slice(lineIndex, lineIndex + take).forEach((line, li) => page.drawText(line, { x: x + 8, y: y - 14 - li * bodyLine, size: bodySize, font: regular, color: ink }));
+            x += cellWidths[index];
+          });
+          y -= height; lineIndex += take;
+        }
+      }
+      y -= 12;
     }
     y -= 10;
 
     const choiceLinks = [];
     const minOptionBottom = 78;
+    const optionGroupHeight = q.options.reduce((height, text) => height + Math.max(38, wrappedLines(text, 457, regular, bodySize, unicode, fallbackTracker).length * 19 + 18) + 8, 0);
+    if (optionGroupHeight <= A4_HEIGHT - 74 - minOptionBottom && y - optionGroupHeight < minOptionBottom) {
+      page = doc.addPage([A4_WIDTH, A4_HEIGHT]);
+      header(page, `QUESTION ${number} / ${totalQuestions} · CONTINUED`, blue);
+      y = A4_HEIGHT - 74;
+    }
     q.options.forEach((optionText, oi) => {
       let remainingText = safeTextForFont(optionText, regular, unicode, fallbackTracker).trim();
       let segment = 0;
@@ -1082,7 +1137,7 @@ export async function buildQuizPdf(questions, title, onProgress = () => {}, exis
         const segHeight = Math.max(38, slice.length * 19 + 18);
         const bottom = y - segHeight;
         page.drawRectangle({ x: 42, y: bottom, width: 511, height: segHeight, borderWidth: 1, borderColor: rgb(.75, .80, .89), color: rgb(.975, .983, 1) });
-        const label = segment === 0 ? `${letters[oi]}.` : `${letters[oi]}. (cont.)`;
+        const label = segment === 0 ? `${q.optionLabels?.[oi] || letters[oi]}.` : `${q.optionLabels?.[oi] || letters[oi]}. (cont.)`;
         page.drawText(label, { x: 52, y: y - 22, size: segment === 0 ? bodySize : 11, font: bold, color: blue });
         slice.forEach((line, row) => page.drawText(line, { x: textX, y: y - 22 - row * 19, size: bodySize, font: regular, color: ink }));
         choiceLinks.push({ page, rect: [42, bottom, 553, y] });
@@ -1117,7 +1172,9 @@ export async function buildQuizPdf(questions, title, onProgress = () => {}, exis
     };
 
     if (hasAnswer) {
-      for (let oi = 0; oi < q.options.length; oi++) {
+      if (q.printedBank) {
+        drawAnswerLine(`Correct answer: ${q.optionLabels?.[q.answer] || letters[q.answer]}. ${q.options[q.answer]}`, bold, bodySize, green);
+      } else for (let oi = 0; oi < q.options.length; oi++) {
         const correct = oi === q.answer;
         drawAnswerLine(`${letters[oi]}. ${q.options[oi]}${correct ? '  (Correct answer)' : ''}`, correct ? bold : regular, bodySize, correct ? green : red);
         ry -= 4;
@@ -1134,7 +1191,11 @@ export async function buildQuizPdf(questions, title, onProgress = () => {}, exis
     const sections = q.explanationSections?.length ? q.explanationSections : [q.explanation?.trim() || 'No explanation provided.'];
     for (const section of sections) {
       if (ry < 110) nextAnswerPage();
-      drawAnswerLine(section, regular, bodySize, ink);
+      if (typeof section === 'string') drawAnswerLine(section, regular, bodySize, ink);
+      else {
+        if (section.heading) drawAnswerLine(section.heading, bold, bodySize, section.correct ? green : red);
+        drawAnswerLine(section.text || '', regular, bodySize, ink);
+      }
       ry -= 6;
     }
 

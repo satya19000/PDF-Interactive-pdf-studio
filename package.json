@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "node scripts/build.cjs",
-    "test": "node tests/unit-tests.mjs && node test.cjs && node batch-test.cjs && node format-test.cjs"
+    "test": "node tests/unit-tests.mjs && node test.cjs && node batch-test.cjs && node format-test.cjs && node printed-bank-test.cjs"
   },
   "keywords": [],
   "author": "",

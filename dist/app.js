@@ -286,12 +286,12 @@ async function makeSource(file, titleText = '') {
       throw new Error('This PDF is corrupt or password-protected and cannot be opened.');
     }
   }
-  const { A4_WIDTH, A4_HEIGHT, safeTextForFont, embedStudioFonts } = await import('./quiz.mjs?v=20261128-pairs');
+  const { A4_WIDTH, A4_HEIGHT, safeTextForFont, embedStudioFonts, cleanEnglishText } = await import('./quiz.mjs?v=20261128-pipeline');
   const { PDFDocument, rgb } = PDFLib;
   const doc = await PDFDocument.create();
   const { regular, bold, unicode } = await embedStudioFonts(doc);
   const fallbackTracker = { transliterated: new Set(), unmapped: new Set() };
-  const safe = t => safeTextForFont(t, regular, unicode, fallbackTracker);
+  const safe = t => safeTextForFont(cleanEnglishText(t), regular, unicode, fallbackTracker);
   const ink = rgb(.09, .14, .22), grey = rgb(.42, .48, .58);
   const heading = safe(titleText || stem(file.name));
   const raw = await contentBlocks(file);
@@ -326,7 +326,7 @@ async function makeSource(file, titleText = '') {
       });
       continue;
     }
-    const text = safeTextForFont((b.text || '').replace(/\r/g, '').replace(/\t/g, '    '), regular, unicode, fallbackTracker);
+    const text = safeTextForFont(cleanEnglishText((b.text || '').replace(/\r/g, '').replace(/\t/g, '    ')), regular, unicode, fallbackTracker);
     if (!text.trim()) continue;
     let page = newA4Page(), y = topY;
     for (const paragraph of text.split('\n')) {
@@ -401,6 +401,10 @@ function showOutputs() {
   $('results').hidden = !outputs.length;
   $('zip').hidden = outputs.length <= 1;
   $('outputs').replaceChildren();
+  const complete = outputs.filter(o => o.resultType === 'quiz').length;
+  const partial = outputs.filter(o => o.resultType === 'partial-quiz').length;
+  const sourceOnly = outputs.filter(o => o.resultType === 'formatted' || o.resultType === 'original' || o.resultType === 'already-interactive').length;
+  $('outputHeading').textContent = `Conversion outputs · ${complete} interactive · ${partial} partial · ${sourceOnly} source/reference`;
 
   const grouped = new Map();
   for (const o of outputs) {
@@ -433,7 +437,7 @@ function renderOutputRow(o) {
   if (o.resultType === 'original') {
     meta = `Original download — formatting unavailable. ${o.reason || ''}`;
   } else if (o.resultType === 'already-interactive') {
-    meta = `Already interactive — unchanged. ${o.mcqs} questions · ${o.pages} pages · ${human(o.blob.size)}`;
+    meta = `Already interactive — unchanged; layout and English-only content not revalidated. ${o.mcqs} questions · ${o.pages} pages · ${human(o.blob.size)}`;
   } else if (o.resultType === 'formatted') {
     meta = `A4 formatted copy — not interactive. ${o.pages} pages · ${human(o.blob.size)}${o.note ? ' · ' + o.note : ''}`;
   } else if (o.resultType === 'partial-quiz') {
@@ -441,7 +445,7 @@ function renderOutputRow(o) {
   } else if (o.resultType === 'report') {
     meta = `Conversion report · ${human(o.blob.size)}`;
   } else {
-    meta = `Interactive quiz. ${o.mcqs} MCQs · ${o.pages} pages · ${human(o.blob.size)}`;
+    meta = `Interactive quiz. ${o.mcqs} MCQs · ${o.pages} pages · ${human(o.blob.size)}${o.note ? ' · ' + o.note : ''}`;
   }
   info.append(el('small', '', meta));
   info.append(el('small', '', `Created: ${outputDateTime(o.createdAt ??= Date.now())}`));
@@ -483,15 +487,15 @@ async function formattedFallback(item, reason) {
         const pdf = await getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
         try {
           const texts = []; let safe = true;
-          const { textLinesFromItems } = await import('./quiz.mjs?v=20261128-pairs');
+          const { textLinesFromItems, cleanEnglishText } = await import('./quiz.mjs?v=20261128-pipeline');
           for (let n = 1; n <= pdf.numPages; n++) {
             const p = await pdf.getPage(n), items = (await p.getTextContent()).items;
             const ops = await p.getOperatorList();
             if (ops.fnArray.some(op => op === 91) || !items.some(i => i.str?.trim())) safe = false;
-            texts.push(textLinesFromItems(items).join('\n'));
+            texts.push(cleanEnglishText(textLinesFromItems(items).join('\n')));
             p.cleanup?.();
           }
-          const { embedStudioFonts, hasGlyph } = await import('./quiz.mjs?v=20261128-pairs');
+          const { embedStudioFonts, hasGlyph } = await import('./quiz.mjs?v=20261128-pipeline');
           if (safe) {
             const probeDoc = await PDFLib.PDFDocument.create();
             const probeFonts = await embedStudioFonts(probeDoc);
@@ -506,7 +510,7 @@ async function formattedFallback(item, reason) {
         } finally { await pdf.destroy(); }
       }
       if (!reflowed) {
-        const { A4_WIDTH, A4_HEIGHT } = await import('./quiz.mjs?v=20261128-pairs');
+        const { A4_WIDTH, A4_HEIGHT } = await import('./quiz.mjs?v=20261128-pipeline');
         source = await PDFLib.PDFDocument.load(new Uint8Array(await source.save()));
         const doc = await PDFLib.PDFDocument.create();
         for (const page of source.getPages()) {
@@ -529,7 +533,7 @@ async function formattedFallback(item, reason) {
     const name = uniqueOutputName(`${safeBase}-A4-formatted.pdf`);
     const note = reflowed
       ? 'Reflowed selectable text: 14 pt on true A4.'
-      : 'Original visual content scaled proportionally onto A4; embedded lettering remains part of the image.';
+      : 'SOURCE REFERENCE ONLY: original content scaled onto A4. Answers may share question pages; image lettering and non-English content are unchanged. Not a rebuilt English interactive quiz.';
     outputs.push({
       sourceItem: item, blob, url: URL.createObjectURL(blob),
       name, pages: source.getPageCount(), mcqs: 0,
@@ -675,8 +679,8 @@ async function extractQuiz(item, report = setProgress) {
     structuredSpreadsheet, hasStructuredAnswerKey, parseVisualOptionBank,
     textLinesFromItems, inferBmjAnswerColors, captureBmjFigures,
     captureMyPastestFigures, captureVisualFigures, recognizeScannedPage,
-    extractPairedImageBank, detectPairedScreenshotStart
-  } = await import('./quiz.mjs?v=20261128-pairs');
+    extractPairedImageBank, detectPairedScreenshotStart, parsePrintedQuestionBank
+  } = await import('./quiz.mjs?v=20261128-pipeline');
 
   item.unresolvedIndices = [];
   item.countVerified = false;
@@ -743,6 +747,15 @@ async function extractQuiz(item, report = setProgress) {
           render();
           await new Promise(r => setTimeout(r, 0));
         }
+      }
+
+      const printed = parsePrintedQuestionBank(pages);
+      if (printed) {
+        item.expectedMCQs = printed.expectedCount;
+        item.unresolvedIndices = printed.unresolved.map(u => `Q${u.index} (page ${u.sourcePage}): ${u.reason}`);
+        item.language = printed.language;
+        item.countVerified = printed.unresolved.length === 0 && printed.questions.length === printed.expectedCount;
+        return printed.questions;
       }
 
       // Paired screenshot bank check (allow minor OCR/stream variance, validate actual regions inside extractPairedImageBank)
@@ -878,7 +891,7 @@ async function convert(items = queue) {
   showOutputs();
   render();
 
-  const { buildQuizPdf, splitQuestionsIntoParts } = await import('./quiz.mjs?v=20261128-pairs');
+  const { buildQuizPdf, splitQuestionsIntoParts, prepareQuestions } = await import('./quiz.mjs?v=20261128-pipeline');
   let done = 0;
 
   try {
@@ -917,22 +930,31 @@ async function convert(items = queue) {
             });
             item.state = 'Already interactive — original pages and links retained.';
             done++;
-            setProgress(done / queue.length * 100, `Processed ${done} of ${pluralFiles(queue.length)}`);
+            setProgress(done / pending.length * 100, `Processed ${done} of ${pluralFiles(pending.length)}`);
             render(); showOutputs();
             continue;
           }
           const { getDocument, GlobalWorkerOptions } = await import('./vendor/pdf.mjs');
-          const { extractLegacyQuizPdf } = await import('./quiz.mjs?v=20261128-pairs');
+          const { extractLegacyQuizPdf } = await import('./quiz.mjs?v=20261128-pipeline');
           GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.mjs', location.href).href;
           const pdfjs = await getDocument({ data: new Uint8Array(await item.file.arrayBuffer()) }).promise;
           try {
-            item.questions = await extractLegacyQuizPdf(pdfjs, (current, total) => setProgress((done + current / total * .75) / queue.length * 90, `${item.file.name}: upgrading ${current}/${total}`));
+            item.questions = await extractLegacyQuizPdf(pdfjs, (current, total) => setProgress((done + current / total * .75) / pending.length * 90, `${item.file.name}: upgrading ${current}/${total}`));
           } finally { await pdfjs.destroy(); }
           item.expectedMCQs = previous.questionCount;
           item.countVerified = item.questions.length === previous.questionCount;
         } else {
-          item.questions = await extractQuiz(item, (value, message) => setProgress((done + value / 100) / queue.length * 90, `${item.file.name}: ${message}`));
+          item.questions = await extractQuiz(item, (value, message) => setProgress((done + value / 100) / pending.length * 90, `${item.file.name}: ${message}`));
         }
+
+        const prepared = prepareQuestions(item.questions);
+        item.questions = prepared.valid;
+        if (prepared.rejected.length) {
+          item.countVerified = false;
+          item.unresolvedIndices.push(...prepared.rejected.map(r => `Q${r.index} (page ${r.sourcePage || '?'}): ${r.reason}`));
+        }
+        item.language ||= { removedCharacters: 0 };
+        item.language.removedCharacters += prepared.language.removedCharacters;
 
         if (!item.questions.length) {
           await formattedFallback(item, item.skipReason || 'No MCQs recognized');
@@ -951,7 +973,7 @@ async function convert(items = queue) {
             const partQs = parts[pi];
             const result = await buildQuizPdf(
               partQs, title,
-              (c, t) => setProgress((done + .75 + c / t * .2) / queue.length * 100, `${item.file.name}: building ${c}/${t}`),
+              (c, t) => setProgress((done + .75 + c / t * .2) / pending.length * 100, `${item.file.name}: building ${c}/${t}`),
               null,
               { startNumber: runningStart, totalQuestions: item.questions.length }
             );
@@ -969,7 +991,7 @@ async function convert(items = queue) {
               url: URL.createObjectURL(blob),
               name: uniqueOutputName(defaultName),
               resultType: isPartial ? 'partial-quiz' : 'quiz',
-              note: isPartial ? `Coverage warning: ${item.questions.length} of ${item.expectedMCQs || item.estimatedMCQs || '?'} questions converted; completeness not verified.` : '',
+              note: (isPartial ? `Coverage warning: ${item.questions.length} of ${item.expectedMCQs || item.estimatedMCQs || '?'} questions converted; completeness not verified. ` : '') + (item.language?.removedCharacters ? 'Non-English-script text and interface glyphs removed from reconstructed text.' : ''),
               bytes: undefined
             });
           }
@@ -1067,7 +1089,7 @@ $('combineDownloaded').onclick = async () => {
   if ($('combineMergeFallback')) $('combineMergeFallback').hidden = true;
   try {
     const { getDocument, GlobalWorkerOptions } = await import('./vendor/pdf.mjs');
-    const { buildQuizPdf, findDuplicateQuestions } = await import('./quiz.mjs?v=20261128-pairs');
+    const { buildQuizPdf, findDuplicateQuestions } = await import('./quiz.mjs?v=20261128-pipeline');
     GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.mjs', location.href).href;
     const all = [];
     for (let i = 0; i < combineQueue.length; i++) {
