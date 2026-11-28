@@ -91,5 +91,26 @@ w.eval(app + ';globalThis.__getOutputs=()=>outputs;globalThis.__getQueue=()=>que
   assert.equal(contDoc.getPage(base.pages).getWidth(), 595.28);
   assert.equal(contDoc.getKeywords().includes('question-count:2'), true);
 
-  console.log('PASS: batch-test.cjs (folder queue, separate outputs, partial quiz+report, A4 continuation).');
+  // Creation timestamp is stable, individual download removes only that output.
+  const firstOutput = w.__getOutputs()[0];
+  const createdAt = firstOutput.createdAt;
+  assert(Number.isFinite(createdAt));
+  w.showOutputs();
+  assert.equal(firstOutput.createdAt, createdAt);
+  assert(w.document.getElementById('outputs').textContent.includes('Created:'));
+  const before = w.__getOutputs().length;
+  const queueSize = w.__getQueue().length;
+  w.document.querySelector('#outputs a.download').onclick();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(w.__getOutputs().length, before - 1);
+  assert(!w.__getOutputs().includes(firstOutput));
+  assert.equal(w.__getQueue().length, queueSize);
+  // ZIP download clears its snapshot of ready outputs, but keeps original uploads.
+  w.JSZip = require('jszip');
+  w.HTMLAnchorElement.prototype.click = () => {};
+  await w.document.getElementById('zip').onclick();
+  assert.equal(w.__getOutputs().length, 0);
+  assert.equal(w.document.getElementById('results').hidden, true);
+  assert.equal(w.__getQueue().length, queueSize);
+  console.log('PASS: batch-test.cjs (folder queue, separate outputs, timestamps, download cleanup, partial quiz+report, A4 continuation).');
 })().catch(e => { console.error(e); process.exitCode = 1; });

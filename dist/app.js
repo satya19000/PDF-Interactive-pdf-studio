@@ -8,6 +8,22 @@ const ext = name => (name.includes('.') ? name.split('.').pop().toLowerCase() : 
 const stem = name => name.replace(/\.[^.]+$/, '');
 const human = n => n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
 const pluralFiles = n => `${n} ${n === 1 ? 'file' : 'files'}`;
+const outputDateTime = value => new Date(value).toLocaleString('en-IN', {
+  day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short'
+});
+
+function removeRequestedDownloads(requested) {
+  outputs = outputs.filter(o => !requested.includes(o));
+  // Keep object URLs alive briefly so the browser can start reading the download.
+  for (const o of requested) setTimeout(() => URL.revokeObjectURL(o.url), 60000);
+  render();
+  showOutputs();
+  $('status').textContent = 'Download requested. Removed from ready outputs; original uploads remain available to convert again. Check your browser Downloads.';
+}
+
+function clearAfterDownload(o) {
+  setTimeout(() => removeRequestedDownloads([o]), 0);
+}
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -47,6 +63,7 @@ function render() {
       const download = el('a', 'download', itemOutputs.length > 1 ? `Download (${itemOutputs.length})` : 'Download');
       download.href = primary.url;
       download.download = primary.name;
+      download.onclick = () => clearAfterDownload(primary);
       row.append(download);
     }
     const remove = el('button', 'textbtn', '×');
@@ -349,6 +366,7 @@ function showOutputs() {
 
   const grouped = new Map();
   for (const o of outputs) {
+    o.createdAt ??= Date.now();
     const key = o.groupKey || o.name;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(o);
@@ -388,9 +406,11 @@ function renderOutputRow(o) {
     meta = `Interactive quiz. ${o.mcqs} MCQs · ${o.pages} pages · ${human(o.blob.size)}`;
   }
   info.append(el('small', '', meta));
+  info.append(el('small', '', `Created: ${outputDateTime(o.createdAt ??= Date.now())}`));
   const a = el('a', 'download', o.resultType === 'report' ? 'Download report' : o.resultType === 'original' ? 'Download original' : 'Download PDF');
   a.href = o.url;
   a.download = o.name;
+  a.onclick = () => clearAfterDownload(o);
   row.append(el('div', 'fileicon', o.resultType === 'report' ? 'TXT' : 'PDF'), info, a);
   return row;
 }
@@ -928,13 +948,15 @@ async function convert(items = queue) {
 $('convert').onclick = () => convert();
 $('zip').onclick = async () => {
   if (!outputs.length) return;
+  const requested = [...outputs];
   $('zip').disabled = true; $('zip').textContent = 'Preparing ZIP…';
   try {
     const zip = new JSZip();
-    for (const o of outputs) zip.file(o.name, await o.blob.arrayBuffer());
+    for (const o of requested) zip.file(o.name, await o.blob.arrayBuffer());
     const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
     const a = document.createElement('a'), url = URL.createObjectURL(blob);
     a.href = url; a.download = 'Interactive-PDFs.zip'; a.click();
+    removeRequestedDownloads(requested);
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   } catch {
     $('status').textContent = 'ZIP could not be created. Download the files individually.';
